@@ -1,21 +1,38 @@
-# Copy to compose.yaml, set a password, then: docker compose up -d
+# Copy to compose.yaml, create the two secret files, then: docker compose up -d
+#
+#   openssl rand -base64 24 > urschema_password.txt   # your login password
+#   openssl rand -hex 32    > urschema_key.txt        # encrypts saved connections
+#   chmod 644 urschema_*.txt                          # the container runs as uid 10001
+#
+# Keep both files out of version control and out of the data volume's backups:
+# with the key stored apart, a copy of the volume alone can't decrypt the
+# saved database credentials.
 services:
   urschema:
     image: ghcr.io/virlatinus/urschema-community:latest
     # build: .            # or build from this checkout
     restart: unless-stopped
     ports:
-      # Drop "127.0.0.1:" to expose it on the network (only with a password, ideally behind TLS)
+      # Drop "127.0.0.1:" to expose it on the network (ideally behind TLS)
       - "127.0.0.1:8080:8080"
     environment:
-      URSCHEMA_PASSWORD: change-me
+      URSCHEMA_PASSWORD_FILE: /run/secrets/urschema_password
+      DB_ENCRYPTION_KEY_FILE: /run/secrets/urschema_key
       # URSCHEMA_READ_ONLY: "true"
-      # DB_ENCRYPTION_KEY: <64 hex chars, e.g. from `openssl rand -hex 32`>
       # URSCHEMA_TLS_CERT: /certs/cert.pem
       # URSCHEMA_TLS_KEY: /certs/key.pem
+    secrets:
+      - urschema_password
+      - urschema_key
     volumes:
       - urschema-data:/opt/urschema/data
       # - ./certs:/certs:ro
+
+secrets:
+  urschema_password:
+    file: ./urschema_password.txt
+  urschema_key:
+    file: ./urschema_key.txt
 
 volumes:
   urschema-data:

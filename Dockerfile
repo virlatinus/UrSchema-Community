@@ -10,7 +10,7 @@ COPY www/ ./
 RUN pnpm run build
 
 # ── Backend ──────────────────────────────────────────────
-FROM golang:1.24-alpine AS api
+FROM golang:1.25-alpine AS api
 WORKDIR /src/backend
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
@@ -33,9 +33,10 @@ COPY --from=web /src/www/dist /opt/urschema/app/www
 RUN mkdir -p /opt/urschema/data /opt/urschema/app/bin/logs \
     && chown -R urschema /opt/urschema/data /opt/urschema/app/bin/logs
 
-# Inside a container the app must listen on all interfaces; the safe
-# default is restored by publishing the port on 127.0.0.1 or by setting
-# URSCHEMA_PASSWORD (see README "Security").
+# Inside a container the app must listen on all interfaces, so it refuses
+# to start without URSCHEMA_PASSWORD (or URSCHEMA_PASSWORD_FILE): other
+# containers on the same network could otherwise reach it unauthenticated.
+# See README "Security".
 ENV HOST=0.0.0.0 PORT=8080
 EXPOSE 8080
 VOLUME /opt/urschema/data

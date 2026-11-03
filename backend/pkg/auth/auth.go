@@ -11,6 +11,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -106,6 +107,7 @@ func (g *Guard) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	g.loginMu.Lock()
 	given := sha256.Sum256([]byte(body.Password))
 	if subtle.ConstantTimeCompare(given[:], g.passwordHash[:]) != 1 {
+		log.Printf("[auth] failed login from %s", clientAddr(r))
 		time.Sleep(failDelay)
 		g.loginMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -129,6 +131,7 @@ func (g *Guard) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	g.sessions[token] = now.Add(sessionTTL)
 	g.mu.Unlock()
+	log.Printf("[auth] login from %s", clientAddr(r))
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
@@ -153,6 +156,7 @@ func (g *Guard) HandleLogout(w http.ResponseWriter, r *http.Request) {
 			g.mu.Lock()
 			delete(g.sessions, c.Value)
 			g.mu.Unlock()
+			log.Printf("[auth] logout from %s", clientAddr(r))
 		}
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -173,6 +177,16 @@ func newToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// clientAddr describes where a request came from for the auth log. The
+// X-Forwarded-For header is included when present but marked as such: it's
+// client-supplied unless a trusted proxy sets it.
+func clientAddr(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		return r.RemoteAddr + " (X-Forwarded-For: " + fwd + ")"
+	}
+	return r.RemoteAddr
 }
 
 func isHTTPS(r *http.Request) bool {

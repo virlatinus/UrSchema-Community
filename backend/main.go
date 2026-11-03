@@ -12,6 +12,7 @@ import (
 	"sqlmanager/pkg/accesslog"
 	"sqlmanager/pkg/auth"
 	"sqlmanager/pkg/db"
+	"sqlmanager/pkg/secret"
 	"strconv"
 	"syscall"
 	"time"
@@ -55,27 +56,30 @@ func main() {
 		port = "8080"
 	}
 
-	password := os.Getenv("URSCHEMA_PASSWORD")
+	password, err := secret.FromEnv("URSCHEMA_PASSWORD")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// Without a password, only listen on loopback so a fresh install isn't
-	// an open database console on the network. HOST overrides either way.
+	// an open database console on the network. HOST overrides the address,
+	// but listening elsewhere without a password needs an explicit opt-in
+	// (e.g. behind a reverse proxy that already authenticates users).
 	host, hostSet := os.LookupEnv("HOST")
 	if !hostSet && password == "" {
 		host = "127.0.0.1"
 	}
 	addr := net.JoinHostPort(host, port)
 	if password == "" && !isLoopback(host) {
-		log.Printf("WARNING: listening on %s without URSCHEMA_PASSWORD; anyone who can reach this port has full access to every saved connection", addr)
+		if !envBool("URSCHEMA_ALLOW_NO_PASSWORD") {
+			log.Fatalf("refusing to listen on %s without a password: anyone who can reach it would get full access to every saved connection. "+
+				"Set URSCHEMA_PASSWORD (or URSCHEMA_PASSWORD_FILE), listen on 127.0.0.1, "+
+				"or set URSCHEMA_ALLOW_NO_PASSWORD=true if something in front of UrSchema already authenticates users", addr)
+		}
+		log.Printf("WARNING: listening on %s without a password (URSCHEMA_ALLOW_NO_PASSWORD=true); anyone who can reach this port has full access to every saved connection", addr)
 	}
 
-	readOnly := false
-	if v := os.Getenv("URSCHEMA_READ_ONLY"); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			log.Fatalf("invalid URSCHEMA_READ_ONLY %q (want true/false/1/0)", v)
-		}
-		readOnly = b
-	}
+	readOnly := envBool("URSCHEMA_READ_ONLY")
 
 	tlsCert, tlsKey := os.Getenv("URSCHEMA_TLS_CERT"), os.Getenv("URSCHEMA_TLS_KEY")
 	if (tlsCert == "") != (tlsKey == "") {
@@ -119,6 +123,19 @@ func main() {
 		core.Container.Log().Error(fmt.Sprintf("failed to start HTTP server: %v", err))
 		return
 	}
+}
+
+// envBool parses a true/false/1/0 environment variable; unset is false.
+func envBool(name string) bool {
+	v := os.Getenv(name)
+	if v == "" {
+		return false
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		log.Fatalf("invalid %s %q (want true/false/1/0)", name, v)
+	}
+	return b
 }
 
 // isLoopback reports whether host only accepts local connections.

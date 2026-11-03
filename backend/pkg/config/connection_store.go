@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sqlmanager/pkg/secret"
 	"sync"
 	"time"
 )
@@ -101,17 +102,24 @@ func GetConnectionStore() *ConnectionStore {
 }
 
 // loadOrCreateEncryptionKey obtains the encryption key by priority:
-//  1. DB_ENCRYPTION_KEY environment variable (64-char hex, suited for K8s Secret / multi-instance)
+//  1. DB_ENCRYPTION_KEY environment variable, or the file named by
+//     DB_ENCRYPTION_KEY_FILE (64-char hex; keeps the key off the data
+//     volume, e.g. a Docker/K8s secret, or shared by several instances)
 //  2. Local key file .dbmanager_secret (randomly generated and persisted on first start)
 func loadOrCreateEncryptionKey() ([]byte, error) {
-	// Priority 1: environment variable
-	if envKey := os.Getenv("DB_ENCRYPTION_KEY"); envKey != "" {
+	envKey, err := secret.FromEnv("DB_ENCRYPTION_KEY")
+	if err != nil {
+		return nil, err
+	}
+
+	// Priority 1: environment variable or key file outside the data dir
+	if envKey != "" {
 		key, err := hex.DecodeString(envKey)
 		if err == nil && len(key) == 32 {
-			log.Println("[ConnectionStore] using environment variable DB_ENCRYPTION_KEY")
+			log.Println("[ConnectionStore] using DB_ENCRYPTION_KEY / DB_ENCRYPTION_KEY_FILE")
 			return key, nil
 		}
-		log.Println("[ConnectionStore] WARNING: DB_ENCRYPTION_KEY is invalid (expect 64-char hex), ignoring")
+		log.Println("[ConnectionStore] WARNING: DB_ENCRYPTION_KEY(_FILE) is invalid (expect 64-char hex), ignoring")
 	}
 
 	// Priority 2: read the local key file
