@@ -148,7 +148,17 @@ func (s *Server) Start(addr, wwwDir string, logOpts accesslog.Options) error {
 		log.Printf("frontend directory %s not found, serving API only", wwwDir)
 	}
 
-	srv := &http.Server{Addr: addr, Handler: accesslog.Wrap(mux, logOpts)}
+	// Reject cross-origin POSTs (CSRF), including from sibling subdomains
+	// that SameSite cookies would let through. Uses Sec-Fetch-Site, falling
+	// back to comparing Origin with Host.
+	csrf := http.NewCrossOriginProtection()
+	csrf.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": http.StatusForbidden, "msg": "cross-origin request blocked"})
+	}))
+
+	srv := &http.Server{Addr: addr, Handler: accesslog.Wrap(csrf.Handler(mux), logOpts)}
 	if s.opts.TLSCert != "" && s.opts.TLSKey != "" {
 		return srv.ListenAndServeTLS(s.opts.TLSCert, s.opts.TLSKey)
 	}

@@ -160,7 +160,11 @@ docker run -d --name urschema \
   ghcr.io/virlatinus/urschema-community:latest
 ```
 
-Or build it yourself with `docker build -t urschema .`. See [`compose.example.yaml`](compose.example.yaml) for a Compose setup. The image sets `HOST=0.0.0.0` because a container has to listen on all interfaces. Keep the published port bound to `127.0.0.1` or set `URSCHEMA_PASSWORD`. The `/opt/urschema/data` volume holds saved connections and the encryption key, so keep it between upgrades.
+Or build it yourself with `docker build -t urschema .`. See [`compose.example.yaml`](compose.example.yaml) for a Compose setup.
+
+A container has to listen on all interfaces (the image sets `HOST=0.0.0.0`), so **the container refuses to start without a password**: otherwise every other container on the same Docker network could reach an unauthenticated console, whatever the published port's binding. Pass the password with `URSCHEMA_PASSWORD`, or as a Docker secret with `URSCHEMA_PASSWORD_FILE=/run/secrets/<name>`.
+
+The `/opt/urschema/data` volume holds saved connections and, unless you set `DB_ENCRYPTION_KEY_FILE`, the encryption key, so keep it between upgrades.
 
 To reach a database running on the Docker host, use `host.docker.internal` (add `--add-host=host.docker.internal:host-gateway` on Linux).
 
@@ -168,7 +172,7 @@ To reach a database running on the Docker host, use `host.docker.internal` (add 
 
 #### Prerequisites
 
-- **Go** ≥ 1.21
+- **Go** ≥ 1.25
 - **Node.js** ≥ 18 + **pnpm**
 
 #### Development
@@ -255,14 +259,30 @@ UrSchema gives whoever reaches it the same access as the database accounts in it
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `URSCHEMA_PASSWORD` | unset | Require this password to use the UI and API. Sessions last 12 hours and are kept in memory, so restarting logs everyone out. Failed logins are throttled to one per second. |
-| `HOST` | `127.0.0.1`, or all interfaces when `URSCHEMA_PASSWORD` is set | Listen address. Set `HOST=0.0.0.0` to expose UrSchema without a password (it logs a warning). |
+| `URSCHEMA_PASSWORD` / `URSCHEMA_PASSWORD_FILE` | unset | Require this password to use the UI and API. The `_FILE` form reads it from a file (e.g. a Docker secret). Sessions last 12 hours and are kept in memory, so restarting logs everyone out. |
+| `HOST` | `127.0.0.1`, or all interfaces when a password is set | Listen address. A non-loopback address without a password refuses to start. |
+| `URSCHEMA_ALLOW_NO_PASSWORD` | `false` | Allow a non-loopback `HOST` without a password. Only for a reverse proxy in front that already authenticates every request; it logs a warning. |
 | `PORT` | `8080` | Listen port. |
 | `URSCHEMA_READ_ONLY` | `false` | Read-only mode (below). |
 | `URSCHEMA_TLS_CERT`, `URSCHEMA_TLS_KEY` | unset | PEM certificate and key paths. When both are set UrSchema serves HTTPS only. |
-| `DB_ENCRYPTION_KEY` | unset | 64 hex chars (32 bytes) used to encrypt saved connections (below). |
+| `DB_ENCRYPTION_KEY` / `DB_ENCRYPTION_KEY_FILE` | unset | 64 hex chars (32 bytes) used to encrypt saved connections, directly or from a file (below). |
 
-There is a single shared password, not user accounts. For per-user logins or SSO, put UrSchema behind a reverse proxy that does authentication (oauth2-proxy, Authelia, Cloudflare Access, Tailscale, etc.).
+### Login: what it does and doesn't cover
+
+UrSchema has **one shared password, not user accounts**. That means:
+
+- No per-user identity, no 2FA, and no per-user audit trail. Logins, failed logins and logouts are logged with the client address (`[auth]` lines), but they can't say *who* signed in.
+- Failed logins are throttled to one attempt per second across all clients, which makes guessing a strong password impractical. There is deliberately no lockout: with one shared password, a lockout would let anyone lock everyone out.
+- Rotating the password means restarting UrSchema, which also ends all sessions.
+
+That's adequate on a trusted network or behind a VPN, an IP allowlist or an SSH tunnel. Before putting UrSchema next to production on a reachable network, put it behind a reverse proxy that does per-user authentication (oauth2-proxy, Authelia, Cloudflare Access, Tailscale, etc.). The proxy then gives you SSO, 2FA and a per-user access log; keep the UrSchema password as a second layer, or use `URSCHEMA_ALLOW_NO_PASSWORD=true` if the proxy is the only way in.
+
+### Sessions and CSRF
+
+- The session cookie is `HttpOnly` (scripts can't read it) and `SameSite=Strict` (browsers don't send it on requests started from other sites). It's `Secure` when the request arrived over HTTPS, directly or with `X-Forwarded-Proto: https`.
+- `SameSite` treats sibling subdomains as the same site, so the API also rejects cross-origin writes: any non-GET request whose `Sec-Fetch-Site` header (sent by all current browsers) says it came from another origin, or, without that header, whose `Origin` doesn't match the `Host`, gets `403`. This uses Go's `net/http.CrossOriginProtection`.
+- All state-changing API calls are `POST`. Requests without browser headers (curl, scripts) are unaffected.
+- Behind a reverse proxy, keep the original `Host` header (the default in Caddy and Traefik; `proxy_set_header Host $host;` in nginx), so the `Origin` fallback check matches.
 
 ### TLS
 
@@ -284,10 +304,15 @@ Read-only mode is a guardrail, not a privilege boundary. Functions with side eff
 
 Saved connections, including their passwords, are stored AES-256-GCM encrypted in `<data dir>/.dbmanager_connections.enc`. The data dir is `data/` next to `app/` in a packaged install (`/opt/urschema/data` in Docker). The key comes from:
 
-1. `DB_ENCRYPTION_KEY`, if it is set to 64 hex characters (generate one with `openssl rand -hex 32`). Use this when the data dir is on shared storage, or to keep the key out of backups of the data dir.
+1. `DB_ENCRYPTION_KEY` (64 hex characters; generate one with `openssl rand -hex 32`), or the file named by `DB_ENCRYPTION_KEY_FILE`.
 2. Otherwise `<data dir>/.dbmanager_secret`. It is created with mode `0600` and a random key on first start.
 
-The key and the encrypted file sit side by side by default, so the encryption protects a copied `.enc` file but not a copy of the whole data dir. If the key changes, existing saved connections can't be decrypted: the old file is moved aside to `.dbmanager_connections.enc.bak` and you start with an empty list.
+**By default the key sits next to the encrypted file**, so the encryption only protects a copied `.enc` file on its own: anyone with a copy of the whole data dir (a backup, a volume snapshot) can decrypt it. To protect saved credentials at rest, keep the key somewhere else:
+
+- Docker / Kubernetes: store the key as a secret and point `DB_ENCRYPTION_KEY_FILE` at it (e.g. `/run/secrets/urschema_key`), so it never lands on the data volume or in its backups.
+- Bare metal: put the key file outside the data dir, readable only by the UrSchema user, and set `DB_ENCRYPTION_KEY_FILE`.
+
+To move an existing install to an external key, copy the contents of `<data dir>/.dbmanager_secret` into the new key file, point `DB_ENCRYPTION_KEY_FILE` at it, then delete `.dbmanager_secret`. If the key changes, existing saved connections can't be decrypted: the old file is moved aside to `.dbmanager_connections.enc.bak` and you start with an empty list.
 
 ### Reporting vulnerabilities
 
