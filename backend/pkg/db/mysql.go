@@ -3,7 +3,6 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -12,6 +11,7 @@ import (
 // MySQLConnection represents a MySQL database connection
 type MySQLConnection struct {
 	BaseConnection
+	databasePools
 }
 
 // Connect establishes a MySQL database connection
@@ -19,6 +19,15 @@ func (mc *MySQLConnection) Connect(config ConnectionConfig) error {
 	mc.config = config
 	mc.dbType = MySQL
 
+	db, err := openMySQL(config)
+	if err != nil {
+		return err
+	}
+	mc.db = db
+	return nil
+}
+
+func openMySQL(config ConnectionConfig) (*sql.DB, error) {
 	// Build connection string with multi-statement support
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&charset=utf8mb4&collation=utf8mb4_unicode_ci&multiStatements=true",
 		config.Username,
@@ -31,7 +40,7 @@ func (mc *MySQLConnection) Connect(config ConnectionConfig) error {
 	// Open connection
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		return fmt.Errorf("failed to open MySQL connection: %w", err)
+		return nil, fmt.Errorf("failed to open MySQL connection: %w", err)
 	}
 
 	// Set connection pool settings (optimized for desktop single-user app)
@@ -43,23 +52,18 @@ func (mc *MySQLConnection) Connect(config ConnectionConfig) error {
 	// Test connection
 	if err := db.Ping(); err != nil {
 		db.Close()
-		return fmt.Errorf("failed to ping MySQL database: %w", err)
+		return nil, fmt.Errorf("failed to ping MySQL database: %w", err)
 	}
-
-	mc.db = db
-	return nil
+	return db, nil
 }
 
-// SelectDatabase switches to the specified database
-func (mc *MySQLConnection) SelectDatabase(database string) error {
-	if mc.db == nil {
-		return fmt.Errorf("database connection is nil")
-	}
-	
-	// Escape backticks to prevent SQL injection
-	// Double any backticks in the database name
-	escapedDb := strings.ReplaceAll(database, "`", "``")
-	
-	_, err := mc.db.Exec(fmt.Sprintf("USE `%s`", escapedDb))
-	return err
+// SelectDatabase returns a connection whose pool has database in its DSN.
+func (mc *MySQLConnection) SelectDatabase(database string) (DBConnection, error) {
+	return mc.selectDatabase(mc, &mc.BaseConnection, database, openMySQL)
+}
+
+// Close closes the connection and every per-database pool.
+func (mc *MySQLConnection) Close() error {
+	mc.closeAll()
+	return mc.BaseConnection.Close()
 }

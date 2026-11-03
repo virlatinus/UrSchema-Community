@@ -54,8 +54,8 @@ func (sc *SQLiteConnection) Connect(config ConnectionConfig) error {
 }
 
 // SelectDatabase for SQLite is a no-op since SQLite uses a single database file
-func (sc *SQLiteConnection) SelectDatabase(database string) error {
+func (sc *SQLiteConnection) SelectDatabase(database string) (DBConnection, error) {
 	// SQLite doesn't support multiple databases in the same connection
 	// The database is the file itself
-	return nil
+	return sc, nil
 }

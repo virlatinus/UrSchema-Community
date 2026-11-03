@@ -4,12 +4,15 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sqlmanager/handler/rpc"
 	"sqlmanager/pkg/accesslog"
+	"sqlmanager/pkg/auth"
 	"sqlmanager/pkg/db"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -51,14 +54,49 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	addr := ":" + port
+
+	password := os.Getenv("URSCHEMA_PASSWORD")
+
+	// Without a password, only listen on loopback so a fresh install isn't
+	// an open database console on the network. HOST overrides either way.
+	host, hostSet := os.LookupEnv("HOST")
+	if !hostSet && password == "" {
+		host = "127.0.0.1"
+	}
+	addr := net.JoinHostPort(host, port)
+	if password == "" && !isLoopback(host) {
+		log.Printf("WARNING: listening on %s without URSCHEMA_PASSWORD; anyone who can reach this port has full access to every saved connection", addr)
+	}
+
+	readOnly := false
+	if v := os.Getenv("URSCHEMA_READ_ONLY"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			log.Fatalf("invalid URSCHEMA_READ_ONLY %q (want true/false/1/0)", v)
+		}
+		readOnly = b
+	}
+
+	tlsCert, tlsKey := os.Getenv("URSCHEMA_TLS_CERT"), os.Getenv("URSCHEMA_TLS_KEY")
+	if (tlsCert == "") != (tlsKey == "") {
+		log.Fatal("URSCHEMA_TLS_CERT and URSCHEMA_TLS_KEY must be set together")
+	}
+	scheme := "http"
+	if tlsCert != "" {
+		scheme = "https"
+	}
 
 	// Start idle connection cleanup (checks every 5 minutes, evicts connections unused for 15 minutes)
 	manager := db.GetManager()
 	manager.StartCleanupRoutine(5*time.Minute, 15*time.Minute)
 
 	// Create the RPC server and register services
-	server := rpc.NewServer()
+	server := rpc.NewServer(rpc.Options{
+		Auth:     auth.New(password),
+		ReadOnly: readOnly,
+		TLSCert:  tlsCert,
+		TLSKey:   tlsKey,
+	})
 
 	// Listen for shutdown signals for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -76,11 +114,20 @@ func main() {
 	}()
 
 	// Start the server (blocking)
-	log.Printf("UrSchema starting on %s (serving frontend from %s)", addr, wwwDir)
+	log.Printf("UrSchema starting on %s://%s (serving frontend from %s; auth: %t, read-only: %t)", scheme, addr, wwwDir, password != "", readOnly)
 	if err := server.Start(addr, wwwDir, logOpts); err != nil {
 		core.Container.Log().Error(fmt.Sprintf("failed to start HTTP server: %v", err))
 		return
 	}
+}
+
+// isLoopback reports whether host only accepts local connections.
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // dumpFlag implements flag.Value for -dump, which is a boolean-like flag

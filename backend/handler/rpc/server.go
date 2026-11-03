@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"sqlmanager/pkg/accesslog"
+	"sqlmanager/pkg/auth"
 	"strings"
 
 	"github.com/DemonZack/simplejrpc-go/core"
@@ -16,13 +17,44 @@ import (
 	"github.com/sourcegraph/jsonrpc2"
 )
 
+// Options configures access control and transport for the HTTP server.
+type Options struct {
+	// Auth is the login guard; nil disables authentication.
+	Auth *auth.Guard
+	// ReadOnly blocks every method that changes a database (see
+	// writeMethods) and restricts db.executeSQL to read-only statements.
+	ReadOnly bool
+	// TLSCert and TLSKey are PEM file paths; when both are set the server
+	// speaks HTTPS instead of HTTP.
+	TLSCert, TLSKey string
+}
+
 type Server struct {
 	handler *gsock.JsonRpcSimpleServiceHandler
+	opts    Options
+}
+
+// writeMethods are refused outright in read-only mode. db.executeSQL is
+// not listed: it is checked per statement (see ExecuteSQL).
+var writeMethods = map[string]bool{
+	"db.createDatabase": true,
+	"db.dropDatabase":   true,
+	"db.importDatabase": true,
+	"db.createTable":    true,
+	"db.alterTable":     true,
+	"db.dropTable":      true,
+	"db.renameTable":    true,
+	"db.updateRow":      true,
+	"db.insertRow":      true,
+	"db.deleteRow":      true,
+	"db.batchModify":    true,
+	"db.importCSV":      true,
+	"db.importTableSQL": true,
 }
 
 // NewServer creates a new RPC server instance
-func NewServer() *Server {
-	return &Server{handler: gsock.NewJsonRpcSimpleServiceHandler()}
+func NewServer(opts Options) *Server {
+	return &Server{handler: gsock.NewJsonRpcSimpleServiceHandler(), opts: opts}
 }
 
 // RegisterHandles registers all RPC handler functions
@@ -105,7 +137,10 @@ func (s *Server) Start(addr, wwwDir string, logOpts accesslog.Options) error {
 	s.RegisterHandles(s.handler)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/", s.handleRPC)
+	mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
+	mux.HandleFunc("/api/auth/login", s.opts.Auth.HandleLogin)
+	mux.HandleFunc("/api/auth/logout", s.opts.Auth.HandleLogout)
+	mux.Handle("/api/", s.opts.Auth.Require(http.HandlerFunc(s.handleRPC)))
 
 	if info, err := os.Stat(wwwDir); err == nil && info.IsDir() {
 		mux.Handle("/", http.FileServer(http.Dir(wwwDir)))
@@ -113,7 +148,23 @@ func (s *Server) Start(addr, wwwDir string, logOpts accesslog.Options) error {
 		log.Printf("frontend directory %s not found, serving API only", wwwDir)
 	}
 
-	return http.ListenAndServe(addr, accesslog.Wrap(mux, logOpts))
+	srv := &http.Server{Addr: addr, Handler: accesslog.Wrap(mux, logOpts)}
+	if s.opts.TLSCert != "" && s.opts.TLSKey != "" {
+		return srv.ListenAndServeTLS(s.opts.TLSCert, s.opts.TLSKey)
+	}
+	return srv.ListenAndServe()
+}
+
+// handleAuthStatus tells the frontend whether it must show the login
+// screen and whether to hide write actions. It is reachable without a
+// session so the login screen can be rendered.
+func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{
+		"authRequired":  s.opts.Auth.Enabled(),
+		"authenticated": s.opts.Auth.Authenticated(r),
+		"readOnly":      s.opts.ReadOnly,
+	})
 }
 
 // handleRPC bridges a plain HTTP POST request into the JSON-RPC handler
@@ -126,6 +177,12 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	method := strings.TrimPrefix(r.URL.Path, "/api/")
+
+	if s.opts.ReadOnly && writeMethods[method] {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": http.StatusForbidden, "msg": gi18n.Instance().T("ReadOnlyBlocked")})
+		return
+	}
 
 	var body struct {
 		Params json.RawMessage `json:"params"`

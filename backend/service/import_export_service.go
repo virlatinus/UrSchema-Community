@@ -47,9 +47,11 @@ func (s *ImportExportService) ExportTable(conn db.DBConnection, dbName, tableNam
 	defer cancel()
 
 	if dbName != "" {
-		if err := conn.SelectDatabase(dbName); err != nil {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
 			return nil, fmt.Errorf("failed to select database: %w", err)
 		}
+		conn = selected
 	}
 
 	// Build query
@@ -151,9 +153,11 @@ func (s *ImportExportService) ImportCSV(conn db.DBConnection, dbName, tableName 
 	defer cancel()
 
 	if dbName != "" {
-		if err := conn.SelectDatabase(dbName); err != nil {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
 			return nil, fmt.Errorf("failed to select database: %w", err)
 		}
+		conn = selected
 	}
 
 	reader := csv.NewReader(strings.NewReader(csvData))
@@ -253,6 +257,14 @@ func (s *ImportExportService) ImportCSV(conn db.DBConnection, dbName, tableName 
 // ImportTableSQL imports SQL data into the current table.
 // Only INSERT INTO statements that target the current table are allowed.
 func (s *ImportExportService) ImportTableSQL(conn db.DBConnection, dbName, tableName string, sqlData string) (*ImportResult, error) {
+	if dbName != "" {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to select database: %w", err)
+		}
+		conn = selected
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 

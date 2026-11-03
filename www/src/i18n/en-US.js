@@ -6,6 +6,17 @@ export default {
         transfer: 'Transfer',
         refresh: 'Refresh',
         switchConnection: 'Switch Connection',
+        readOnly: 'Read-only',
+        readOnlyHint: 'The server is running in read-only mode. Edits, imports and DDL are disabled.',
+        logout: 'Log out',
+    },
+
+    login: {
+        title: 'Sign in to UrSchema',
+        password: 'Password',
+        submit: 'Sign in',
+        invalid: 'Incorrect password',
+        failed: 'Sign-in failed: {msg}',
     },
 
     tabSwitcher: {

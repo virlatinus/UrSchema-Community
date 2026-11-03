@@ -11,6 +11,7 @@ import (
 // PostgreSQLConnection represents a PostgreSQL database connection
 type PostgreSQLConnection struct {
 	BaseConnection
+	databasePools
 }
 
 // Connect establishes a PostgreSQL database connection
@@ -18,6 +19,15 @@ func (pc *PostgreSQLConnection) Connect(config ConnectionConfig) error {
 	pc.config = config
 	pc.dbType = PostgreSQL
 
+	db, err := openPostgres(config)
+	if err != nil {
+		return err
+	}
+	pc.db = db
+	return nil
+}
+
+func openPostgres(config ConnectionConfig) (*sql.DB, error) {
 	// Use default 'postgres' database if not specified
 	dbName := config.Database
 	if dbName == "" {
@@ -36,7 +46,7 @@ func (pc *PostgreSQLConnection) Connect(config ConnectionConfig) error {
 	// Open connection
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		return fmt.Errorf("failed to open PostgreSQL connection: %w", err)
+		return nil, fmt.Errorf("failed to open PostgreSQL connection: %w", err)
 	}
 
 	// Set connection pool settings (optimized for desktop single-user app)
@@ -48,31 +58,19 @@ func (pc *PostgreSQLConnection) Connect(config ConnectionConfig) error {
 	// Test connection
 	if err := db.Ping(); err != nil {
 		db.Close()
-		return fmt.Errorf("failed to ping PostgreSQL database: %w", err)
+		return nil, fmt.Errorf("failed to ping PostgreSQL database: %w", err)
 	}
-
-	pc.db = db
-	return nil
+	return db, nil
 }
 
-// SelectDatabase switches to a different database (requires reconnection for PostgreSQL)
-func (pc *PostgreSQLConnection) SelectDatabase(database string) error {
-	if pc.db == nil {
-		return fmt.Errorf("database connection is nil")
-	}
-	
-	// PostgreSQL: Database is set at connection time via DSN
-	// To switch databases, we need to reconnect with a new DSN
-	
-	// Close existing connection
-	if err := pc.db.Close(); err != nil {
-		return fmt.Errorf("failed to close existing connection: %w", err)
-	}
-	
-	// Update config with new database
-	newConfig := pc.config
-	newConfig.Database = database
-	
-	// Reconnect with new database
-	return pc.Connect(newConfig)
+// SelectDatabase returns a connection to database. PostgreSQL fixes the
+// database per session, so each database gets its own pool.
+func (pc *PostgreSQLConnection) SelectDatabase(database string) (DBConnection, error) {
+	return pc.selectDatabase(pc, &pc.BaseConnection, database, openPostgres)
+}
+
+// Close closes the connection and every per-database pool.
+func (pc *PostgreSQLConnection) Close() error {
+	pc.closeAll()
+	return pc.BaseConnection.Close()
 }

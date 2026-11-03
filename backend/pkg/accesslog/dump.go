@@ -54,7 +54,7 @@ func dumpHandler(next http.Handler, out io.Writer, format DumpFormat, includeBod
 			Path:           r.URL.RequestURI(),
 			Proto:          r.Proto,
 			RemoteAddr:     r.RemoteAddr,
-			RequestHeaders: r.Header.Clone(),
+			RequestHeaders: redactHeaders(r.Header, "Cookie"),
 		}
 
 		if includeBody && r.Body != nil {
@@ -62,6 +62,9 @@ func dumpHandler(next http.Handler, out io.Writer, format DumpFormat, includeBod
 			_ = r.Body.Close()
 			if err == nil {
 				e.RequestBody = jsonBody(body)
+				if r.URL.Path == "/api/auth/login" {
+					e.RequestBody = jsonBody(`{"password":"[redacted]"}`)
+				}
 				r.Body = io.NopCloser(bytes.NewReader(body))
 			}
 		}
@@ -72,13 +75,26 @@ func dumpHandler(next http.Handler, out io.Writer, format DumpFormat, includeBod
 
 		e.StatusCode = rec.statusCode
 		e.Duration = time.Since(start).String()
-		e.ResponseHeaders = w.Header().Clone()
+		e.ResponseHeaders = redactHeaders(w.Header(), "Set-Cookie")
 		if includeBody {
 			e.ResponseBody = jsonBody(rec.body.Bytes())
 		}
 
 		writeEntry(out, format, e)
 	})
+}
+
+// redactHeaders clones h with the named header's values masked, so
+// session cookies don't end up in log files.
+func redactHeaders(h http.Header, name string) http.Header {
+	c := h.Clone()
+	if vals := c.Values(name); len(vals) > 0 {
+		c.Del(name)
+		for range vals {
+			c.Add(name, "[redacted]")
+		}
+	}
+	return c
 }
 
 // recorder wraps a http.ResponseWriter to capture the status code and,

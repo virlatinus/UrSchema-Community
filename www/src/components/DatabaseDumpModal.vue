@@ -686,7 +686,7 @@ function openOutputFolder() {
   align-items: flex-start;
   gap: 6px;
   font-size: 12px;
-  color: var(--ref-color-yellow-6);
+  color: var(--ref-color-orange-6);
   line-height: 1.5;
   padding: 6px 10px;
   background: rgba(250,173,20,0.06);
