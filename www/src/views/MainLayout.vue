@@ -61,6 +61,15 @@
             :placeholder="t('toolbar.switchConnection')"
             @update:value="handleSwitchConnection"
           />
+          <n-tooltip v-if="session.readOnly" trigger="hover">
+            <template #trigger>
+              <n-tag size="small" type="warning" :bordered="false" id="tag-read-only">{{ t('toolbar.readOnly') }}</n-tag>
+            </template>
+            {{ t('toolbar.readOnlyHint') }}
+          </n-tooltip>
+          <n-button v-if="session.authRequired" size="small" class="toolbar-btn ghost" id="btn-logout" :bordered="false" @click="session.logout()">
+            {{ t('toolbar.logout') }}
+          </n-button>
         </div>
       </n-layout-header>
 
@@ -122,6 +131,7 @@
 import { computed, ref, defineAsyncComponent, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useDatabaseStore } from '@/stores/database'
+import { useSessionStore } from '@/stores/session'
 import DatabaseTree from '@/components/DatabaseTree.vue'
 import FormModal from '@/components/FormModal.vue'
 import WorkArea from '@/components/WorkArea.vue'
@@ -133,6 +143,7 @@ import { useNotify } from '@/utils/notify'
 const { t } = useI18n()
 const notify = useNotify()
 const store = useDatabaseStore()
+const session = useSessionStore()
 
 const SIDEBAR_WIDTH = 240
 const showConnectionSwitcher = computed(() => store.connections.length > 1)

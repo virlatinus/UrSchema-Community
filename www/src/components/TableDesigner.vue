@@ -37,7 +37,7 @@
           <template #icon><i class="icon-code" /></template>
           {{ $t('designer.previewDDL') }}
         </n-button>
-        <n-button size="small" :loading="saving" type="primary" @click="save" :disabled="!tableDef.name">
+        <n-button size="small" :loading="saving" type="primary" @click="save" :disabled="!tableDef.name || session.readOnly">
           {{ isNew ? $t('designer.createTable') : $t('designer.saveChanges') }}
         </n-button>
       </div>
@@ -181,6 +181,7 @@
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useDatabaseStore } from '@/stores/database'
+import { useSessionStore } from '@/stores/session'
 import api from '@/utils/api'
 import { useNotify } from '@/utils/notify'
 
@@ -197,6 +198,7 @@ const emit = defineEmits(['saved', 'close'])
 const { t } = useI18n()
 const notify = useNotify()
 const store = useDatabaseStore()
+const session = useSessionStore()
 
 const isNew = computed(() => !props.tableName)
 const saving = ref(false)

@@ -82,6 +82,14 @@ func (ds *DatabaseService) ListDatabases(conn db.DBConnection) ([]DatabaseInfo, 
 
 // ListSchemas lists all schemas in a PostgreSQL database
 func (ds *DatabaseService) ListSchemas(conn db.DBConnection, dbName string) ([]string, error) {
+	if dbName != "" {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to select database: %w", err)
+		}
+		conn = selected
+	}
+
 	ctx := context.Background()
 	
 	// Only PostgreSQL has schemas
@@ -115,6 +123,14 @@ func (ds *DatabaseService) ListSchemas(conn db.DBConnection, dbName string) ([]s
 
 // GetDatabaseInfo returns detailed information about a database
 func (ds *DatabaseService) GetDatabaseInfo(conn db.DBConnection, dbName string) (*DatabaseInfo, error) {
+	if dbName != "" {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to select database: %w", err)
+		}
+		conn = selected
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

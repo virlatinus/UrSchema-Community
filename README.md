@@ -14,12 +14,24 @@
   <a href="https://urschema.app">urschema.app</a>
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/sql-editor.png" alt="UrSchema SQL editor with query results" />
+</p>
+
 ---
 
 ## ✨ Features
 
+### Access Control
+- 🔑 Optional password login (`URSCHEMA_PASSWORD`) with HttpOnly session cookies and brute-force throttling
+- 👀 Read-only mode (`URSCHEMA_READ_ONLY`) for browsing production data safely
+- 🔒 Native HTTPS (`URSCHEMA_TLS_CERT` / `URSCHEMA_TLS_KEY`)
+- 🏠 Listens on `127.0.0.1` only unless a password is set
+
+See [Security](#-security) for details.
+
 ### Connection Management
-- 🔐 AES-256-GCM encrypted credential storage
+- 🔐 AES-256-GCM encrypted credential storage (see [Encryption key](#encryption-key))
 - 🔌 Multiple concurrent connections with automatic pool recycling
 - ✅ Connection testing & one-click save
 - 🗂️ Server-side file browser for picking SQLite database files
@@ -82,7 +94,7 @@
 |-------|-----------|
 | **Frontend** | Vue 3 + Naive UI + CodeMirror 6 + Pinia |
 | **Backend** | Go + simplejrpc-go, exposed over a plain HTTP endpoint |
-| **Storage** | AES-256-GCM encrypted JSON (connection configs) |
+| **Storage** | AES-256-GCM encrypted JSON (connection configs), key from `DB_ENCRYPTION_KEY` or `data/.dbmanager_secret` |
 
 The backend serves both the JSON API (`/api/<method>`) and the built frontend's static assets from a single process — no separate gateway or reverse proxy is required to run UrSchema.
 
@@ -98,10 +110,12 @@ UrSchema/
 │   ├── handler/rpc/         # JSON-RPC route handlers + HTTP server
 │   ├── service/             # Business logic layer
 │   ├── pkg/
+│   │   ├── auth/            # Password login + sessions
 │   │   ├── config/          # Connection store (encrypted)
 │   │   ├── db/              # Database abstraction layer
 │   │   ├── files/           # File utilities
-│   │   └── rpcutil/         # RPC utilities
+│   │   ├── rpcutil/         # RPC utilities
+│   │   └── sqlguard/        # Read-only mode statement checks
 │   ├── i18n/                # Backend i18n
 │   ├── Makefile             # Build script
 │   └── main.go              # Entry point
@@ -116,20 +130,48 @@ UrSchema/
 │   │   └── utils/           # API client & UI helpers (toasts, dialogs)
 │   └── vite.config.js
 │
-├── docs/                    # Architecture docs
-└── landing/                 # Marketing site for urschema.app
+├── docs/                    # Architecture docs + screenshots
+├── Dockerfile               # Container image (see Docker below)
+└── compose.example.yaml
 ```
 
 ---
 
 ## 🚀 Getting Started
 
-### Prerequisites
+### Download a release
+
+Prebuilt linux amd64/arm64 tarballs are attached to each [GitHub Release](https://github.com/virlatinus/UrSchema-Community/releases):
+
+```bash
+tar -xzf urschema-linux-amd64.tar.gz
+cd app/bin && URSCHEMA_PASSWORD='choose-one' ./main
+```
+
+The binary must be started from `app/bin` (it reads `config.json` and `i18n/` from the working directory).
+
+### Docker
+
+```bash
+docker run -d --name urschema \
+  -p 127.0.0.1:8080:8080 \
+  -e URSCHEMA_PASSWORD='choose-one' \
+  -v urschema-data:/opt/urschema/data \
+  ghcr.io/virlatinus/urschema-community:latest
+```
+
+Or build it yourself with `docker build -t urschema .`. See [`compose.example.yaml`](compose.example.yaml) for a Compose setup. The image sets `HOST=0.0.0.0` because a container has to listen on all interfaces. Keep the published port bound to `127.0.0.1` or set `URSCHEMA_PASSWORD`. The `/opt/urschema/data` volume holds saved connections and the encryption key, so keep it between upgrades.
+
+To reach a database running on the Docker host, use `host.docker.internal` (add `--add-host=host.docker.internal:host-gateway` on Linux).
+
+### Build from source
+
+#### Prerequisites
 
 - **Go** ≥ 1.21
 - **Node.js** ≥ 18 + **pnpm**
 
-### Development
+#### Development
 
 The quickest way to get both servers running is `make start`, which installs any missing Go/pnpm dependencies (`go mod tidy` + `pnpm install`), then launches the backend and frontend dev servers together (via `concurrently`) and wires the frontend proxy to the backend port automatically:
 
@@ -160,7 +202,7 @@ pnpm install
 BACKEND_PORT=8888 pnpm dev   # http://localhost:5173, proxying to a custom backend port
 ```
 
-### Build & Package
+#### Build & Package
 
 ```bash
 cd backend
@@ -184,7 +226,7 @@ build/linux-amd64/
 
 Running the packaged binary (`app/bin/main`) starts an HTTP server that serves both the API and the frontend from `app/www` — open it directly in a browser, no other services required.
 
-### Access Logging
+#### Access Logging
 
 The backend supports four levels of Apache-style access logging, off by default:
 
@@ -201,11 +243,64 @@ The backend supports four levels of Apache-style access logging, off by default:
 ./main -dump=text     # full request/response dump, plain text
 ```
 
+`-dump` logs request bodies, which include database passwords sent by the connection form. Session cookies and the login password are redacted, but don't leave `-dump` on in production.
+
+---
+
+## 🛡️ Security
+
+UrSchema gives whoever reaches it the same access as the database accounts in its saved connections. Treat it like an SSH session to your database servers.
+
+### Configuration
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `URSCHEMA_PASSWORD` | unset | Require this password to use the UI and API. Sessions last 12 hours and are kept in memory, so restarting logs everyone out. Failed logins are throttled to one per second. |
+| `HOST` | `127.0.0.1`, or all interfaces when `URSCHEMA_PASSWORD` is set | Listen address. Set `HOST=0.0.0.0` to expose UrSchema without a password (it logs a warning). |
+| `PORT` | `8080` | Listen port. |
+| `URSCHEMA_READ_ONLY` | `false` | Read-only mode (below). |
+| `URSCHEMA_TLS_CERT`, `URSCHEMA_TLS_KEY` | unset | PEM certificate and key paths. When both are set UrSchema serves HTTPS only. |
+| `DB_ENCRYPTION_KEY` | unset | 64 hex chars (32 bytes) used to encrypt saved connections (below). |
+
+There is a single shared password, not user accounts. For per-user logins or SSO, put UrSchema behind a reverse proxy that does authentication (oauth2-proxy, Authelia, Cloudflare Access, Tailscale, etc.).
+
+### TLS
+
+Without TLS, the password, session cookie and every query and result travel in plain text. Either set `URSCHEMA_TLS_CERT`/`URSCHEMA_TLS_KEY`, or terminate TLS at a reverse proxy (Caddy, nginx, Traefik) and keep UrSchema on `127.0.0.1`. The session cookie gets the `Secure` flag when the request arrived over HTTPS directly or with `X-Forwarded-Proto: https`.
+
+For access from your own machine only, an SSH tunnel needs no extra setup: `ssh -L 8080:127.0.0.1:8080 your-server`.
+
+### Read-only mode
+
+With `URSCHEMA_READ_ONLY=true`:
+
+- Row edits, inserts and deletes, table design, rename, truncate, drop, create database and all imports are refused by the server and hidden in the UI.
+- The SQL editor accepts a single `SELECT`, `WITH`, `SHOW`, `EXPLAIN`, `DESCRIBE`, `PRAGMA` (without `=`), `VALUES` or `TABLE` statement. It then runs inside a `READ ONLY` transaction (PostgreSQL, MySQL) or with `PRAGMA query_only` (SQLite), so writes hidden in a CTE or `EXPLAIN ANALYZE` are refused by the database too.
+- Exports still work, including writing dump files to the server's filesystem.
+
+Read-only mode is a guardrail, not a privilege boundary. Functions with side effects that the database allows inside a read-only transaction (for example `pg_terminate_backend`) still run. When it has to be guaranteed, connect with a database user that only has `SELECT` grants.
+
+### Encryption key
+
+Saved connections, including their passwords, are stored AES-256-GCM encrypted in `<data dir>/.dbmanager_connections.enc`. The data dir is `data/` next to `app/` in a packaged install (`/opt/urschema/data` in Docker). The key comes from:
+
+1. `DB_ENCRYPTION_KEY`, if it is set to 64 hex characters (generate one with `openssl rand -hex 32`). Use this when the data dir is on shared storage, or to keep the key out of backups of the data dir.
+2. Otherwise `<data dir>/.dbmanager_secret`. It is created with mode `0600` and a random key on first start.
+
+The key and the encrypted file sit side by side by default, so the encryption protects a copied `.enc` file but not a copy of the whole data dir. If the key changes, existing saved connections can't be decrypted: the old file is moved aside to `.dbmanager_connections.enc.bak` and you start with an empty list.
+
+### Reporting vulnerabilities
+
+Please report security issues privately, as described in [SECURITY.md](SECURITY.md), rather than in public issues.
+
 ---
 
 ## 📸 Screenshots
 
-> *Coming soon*
+| | |
+|---|---|
+| ![Database overview](docs/screenshots/overview.png) | ![Data grid](docs/screenshots/data-grid.png) |
+| ![Table structure](docs/screenshots/structure.png) | ![Login](docs/screenshots/login.png) |
 
 ---
 
@@ -227,6 +322,12 @@ Contributions are welcome! Please follow these guidelines:
 
 ---
 
+## 🧭 Editions
+
+UrSchema Community is the full, MIT-licensed core: everything in this repository is free to use, modify and self-host, and stays that way. A commercial edition (desktop apps, priority support and additional features) is being planned for teams that want them; it will build on this core rather than remove anything from it.
+
+---
+
 ## 📄 License
 
-[MIT](LICENSE)
+[MIT](LICENSE). UrSchema started as a fork of [DBStudio](https://github.com/GMSSH/DBStudio) by GMSSH, also MIT licensed, which is why the LICENSE lists both copyright holders.

@@ -101,9 +101,11 @@ func (ts *TableService) ListTables(conn db.DBConnection, dbName string) ([]Table
 
 	// Switch to the target database first (critical for PostgreSQL)
 	if dbName != "" {
-		if err := conn.SelectDatabase(dbName); err != nil {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
 			return nil, fmt.Errorf("failed to select database %s: %w", dbName, err)
 		}
+		conn = selected
 	}
 
 	var query string
@@ -118,11 +120,18 @@ func (ts *TableService) ListTables(conn db.DBConnection, dbName string) ([]Table
 				 ORDER BY CASE WHEN table_type = 'BASE TABLE' THEN 0 ELSE 1 END, table_name`
 		args = []interface{}{dbName}
 	case db.PostgreSQL:
-		query = `SELECT table_name, table_type
-		         FROM information_schema.tables
-		         WHERE table_catalog = $1
-		           AND table_schema NOT IN ('pg_catalog', 'information_schema')
-		         ORDER BY CASE WHEN table_type = 'BASE TABLE' THEN 0 ELSE 1 END, table_schema, table_name`
+		// Row counts are the statistics collector's live-tuple estimate
+		// (like MySQL's table_rows), not an exact COUNT(*).
+		query = `SELECT t.table_name, t.table_type, st.n_live_tup,
+		                CASE WHEN c.relkind IN ('r', 'p', 'm') THEN pg_total_relation_size(c.oid) END,
+		                obj_description(c.oid, 'pg_class')
+		         FROM information_schema.tables t
+		         JOIN pg_namespace n ON n.nspname = t.table_schema
+		         JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = t.table_name
+		         LEFT JOIN pg_stat_user_tables st ON st.relid = c.oid
+		         WHERE t.table_catalog = $1
+		           AND t.table_schema NOT IN ('pg_catalog', 'information_schema')
+		         ORDER BY CASE WHEN t.table_type = 'BASE TABLE' THEN 0 ELSE 1 END, t.table_schema, t.table_name`
 		args = []interface{}{dbName}
 	case db.SQLite:
 		query = `SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY CASE WHEN type='table' THEN 0 ELSE 1 END, name`
@@ -175,7 +184,9 @@ func (ts *TableService) ListTables(conn db.DBConnection, dbName string) ([]Table
 			}
 		case db.PostgreSQL:
 			var objectType string
-			if err := rows.Scan(&table.Name, &objectType); err != nil {
+			var rowCount, size sql.NullInt64
+			var comment sql.NullString
+			if err := rows.Scan(&table.Name, &objectType, &rowCount, &size, &comment); err != nil {
 				return nil, err
 			}
 			if objectType == "VIEW" {
@@ -183,7 +194,9 @@ func (ts *TableService) ListTables(conn db.DBConnection, dbName string) ([]Table
 			} else {
 				table.Type = "table"
 			}
-			table.RowCount = 0
+			table.RowCount = rowCount.Int64
+			table.Size = size.Int64
+			table.Comment = comment.String
 		case db.SQLite:
 			var objectType string
 			if err := rows.Scan(&table.Name, &objectType); err != nil {
@@ -205,6 +218,14 @@ func (ts *TableService) ListTables(conn db.DBConnection, dbName string) ([]Table
 
 // GetTableSchema returns the schema of a table
 func (ts *TableService) GetTableSchema(conn db.DBConnection, dbName, tableName string) (*TableSchema, error) {
+	if dbName != "" {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to select database: %w", err)
+		}
+		conn = selected
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -353,6 +374,14 @@ func (ts *TableService) GetTableSchema(conn db.DBConnection, dbName, tableName s
 
 // GetTableData returns paginated data from a table (max 500 rows)
 func (ts *TableService) GetTableData(conn db.DBConnection, dbName, tableName string, page, pageSize int, sortCol, sortDir string) (*TableData, error) {
+	if dbName != "" {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to select database: %w", err)
+		}
+		conn = selected
+	}
+
 	startTime := time.Now()
 
 	// Enforce max 500 rows
@@ -497,46 +526,14 @@ func (ts *TableService) ExecuteSQL(conn db.DBConnection, sqlQuery string) (*Quer
 		}
 		defer rows.Close()
 
-		// Get column names
-		columns, err := rows.Columns()
+		data, err := readAllRows(rows)
 		if err != nil {
 			result.Success = false
 			result.Error = err.Error()
 			result.ExecutionTime = float64(time.Since(startTime).Milliseconds())
 			return result, nil
 		}
-
-		// Read all rows
-		var data [][]interface{}
-		for rows.Next() {
-			values := make([]interface{}, len(columns))
-			valuePtrs := make([]interface{}, len(columns))
-			for i := range values {
-				valuePtrs[i] = &values[i]
-			}
-
-			if err := rows.Scan(valuePtrs...); err != nil {
-				result.Success = false
-				result.Error = err.Error()
-				result.ExecutionTime = float64(time.Since(startTime).Milliseconds())
-				return result, nil
-			}
-
-			row := make([]interface{}, len(columns))
-			for i, v := range values {
-				row[i] = safeConvertValue(v)
-			}
-
-			data = append(data, row)
-		}
-
-		result.Data = &TableData{
-			Columns:  columns,
-			Rows:     data,
-			Total:    int64(len(data)),
-			Page:     1,
-			PageSize: len(data),
-		}
+		result.Data = data
 	} else {
 		// Execute query that doesn't return rows (INSERT, UPDATE, DELETE, etc.)
 		execResult, err := conn.Exec(ctx, sqlQuery)
@@ -568,9 +565,11 @@ func (ts *TableService) UpdateRow(conn db.DBConnection, dbName, tableName string
 	defer cancel()
 
 	if dbName != "" {
-		if err := conn.SelectDatabase(dbName); err != nil {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
 			return fmt.Errorf("failed to select database: %w", err)
 		}
+		conn = selected
 	}
 
 	// Build SET clause
@@ -637,9 +636,11 @@ func (ts *TableService) InsertRow(conn db.DBConnection, dbName, tableName string
 	defer cancel()
 
 	if dbName != "" {
-		if err := conn.SelectDatabase(dbName); err != nil {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
 			return fmt.Errorf("failed to select database: %w", err)
 		}
+		conn = selected
 	}
 
 	var columns []string
@@ -690,9 +691,11 @@ func (ts *TableService) DeleteRow(conn db.DBConnection, dbName, tableName string
 	defer cancel()
 
 	if dbName != "" {
-		if err := conn.SelectDatabase(dbName); err != nil {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
 			return fmt.Errorf("failed to select database: %w", err)
 		}
+		conn = selected
 	}
 
 	var whereClauses []string
@@ -774,9 +777,11 @@ func (ts *TableService) BatchModify(conn db.DBConnection, dbName, tableName stri
 	defer cancel()
 
 	if dbName != "" {
-		if err := conn.SelectDatabase(dbName); err != nil {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
 			return nil, fmt.Errorf("failed to select database: %w", err)
 		}
+		conn = selected
 	}
 
 	dbConn := conn.GetDB()

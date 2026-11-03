@@ -140,14 +140,24 @@ func (s *Server) ExecuteSQL(req *gsock.Request) (any, error) {
 	}
 
 	// Select database before executing SQL
+	conn := managedConn.Conn
 	if args.Database != "" {
-		if err := managedConn.Conn.SelectDatabase(args.Database); err != nil {
+		selected, err := conn.SelectDatabase(args.Database)
+		if err != nil {
 			return nil, fmt.Errorf("Failed to select database: %v", err)
 		}
+		conn = selected
 	}
 
 	tableService := service.NewTableService()
-	result, err := tableService.ExecuteSQL(managedConn.Conn, args.SQL)
+	if s.opts.ReadOnly {
+		result, err := tableService.ExecuteSQLReadOnly(conn, args.SQL)
+		if err != nil {
+			return nil, fmt.Errorf(gi18n.Instance().T("ReadOnlySQL"), err.Error())
+		}
+		return result, nil
+	}
+	result, err := tableService.ExecuteSQL(conn, args.SQL)
 	if err != nil {
 		return nil, fmt.Errorf(gi18n.Instance().T("ExecuteSQLError"), err.Error())
 	}

@@ -9,7 +9,10 @@
       <n-dialog-provider>
         <n-notification-provider>
           <div id="app-window">
-            <MainLayout />
+            <template v-if="session.loaded">
+              <LoginView v-if="session.authRequired && !session.authenticated" />
+              <MainLayout v-else />
+            </template>
           </div>
         </n-notification-provider>
       </n-dialog-provider>
@@ -18,9 +21,15 @@
 </template>
 
 <script setup>
+import { onMounted } from 'vue'
 import { darkTheme, enUS, dateEnUS } from 'naive-ui'
 import MainLayout from '@/views/MainLayout.vue'
+import LoginView from '@/views/LoginView.vue'
 import { themeOverrides } from '@/styles/naive-theme.js'
+import { useSessionStore } from '@/stores/session'
+
+const session = useSessionStore()
+onMounted(() => session.fetchStatus())
 </script>
 
 <style>

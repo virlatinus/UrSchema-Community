@@ -141,15 +141,18 @@ import { computed, ref, h, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NTooltip } from 'naive-ui'
 import { useDatabaseStore } from '@/stores/database'
+import { useSessionStore } from '@/stores/session'
 import FormModal from '@/components/FormModal.vue'
 import connectionApi from '@/utils/connectionApi'
 import api from '@/utils/api'
+import { quoteIdentifier } from '@/utils/sql'
 import { useNotify } from '@/utils/notify'
 
 const { t } = useI18n()
 const notify = useNotify()
 
 const store = useDatabaseStore()
+const session = useSessionStore()
 
 const emit = defineEmits(['add-connection', 'edit-connection'])
 
@@ -212,15 +215,6 @@ const getDatabaseCacheKey = (connId, dbName) => `${connId}::${dbName}`
 const getSavedConnectionConfig = (savedConnId) => allConnections.value.find((item) => item.id === savedConnId) || null
 const getConnectionDbType = (savedConnId) => getSavedConnectionConfig(savedConnId)?.dbType || 'mysql'
 const MYSQL_SYSTEM_DATABASES = new Set(['information_schema', 'mysql', 'performance_schema', 'sys'])
-
-const quoteIdentifier = (identifier, dbType = 'mysql') => {
-  const value = String(identifier || '')
-  if (dbType === 'postgres') {
-    return `"${value.replace(/"/g, '""')}"`
-  }
-
-  return `\`${value.replace(/`/g, '``')}\``
-}
 
 function isProtectedMySQLDatabase(node) {
   const dbType = String(getConnectionDbType(node?.connId) || '').toLowerCase()
@@ -992,7 +986,23 @@ watch(contextMenuNode, (node) => {
       { label: t('tree.exportData'), key: 'export-data' }
     ]
   }
+
+  if (session.readOnly) {
+    contextMenuOptions.value = withoutWriteActions(contextMenuOptions.value)
+  }
 })
+
+// Menu actions that change a database; hidden in read-only mode.
+const WRITE_MENU_KEYS = new Set([
+  'new-database', 'import-database', 'drop-db',
+  'rename-table', 'import-data', 'truncate-table', 'drop-table'
+])
+
+// Removes write actions, then any divider left leading, trailing or doubled.
+function withoutWriteActions(options) {
+  const kept = options.filter((o) => !WRITE_MENU_KEYS.has(o.key))
+  return kept.filter((o, i) => o.type !== 'divider' || (i > 0 && i < kept.length - 1 && kept[i - 1].type !== 'divider'))
+}
 
 const closeContextMenu = () => {
   showContextMenu.value = false

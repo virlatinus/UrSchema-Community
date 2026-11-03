@@ -12,7 +12,7 @@
         </n-button>
         <n-button
           class="transfer-toolbar__button"
-          :disabled="!currentConnId"
+          :disabled="!currentConnId || session.readOnly"
           @click="openTaskModal('import')"
         >
           {{ t('transfer.newImport') }}
@@ -205,6 +205,7 @@ import { useI18n } from 'vue-i18n'
 import DatabaseDumpModal from '@/components/DatabaseDumpModal.vue'
 import ServerFilePicker from '@/components/ServerFilePicker.vue'
 import { useDatabaseStore } from '@/stores/database'
+import { useSessionStore } from '@/stores/session'
 import api from '@/utils/api'
 import { useNotify } from '@/utils/notify'
 
@@ -222,6 +223,7 @@ const emit = defineEmits(['auto-launch-consumed'])
 const { t } = useI18n()
 const notify = useNotify()
 const store = useDatabaseStore()
+const session = useSessionStore()
 
 const tasks = ref([])
 const taskLogs = ref([])

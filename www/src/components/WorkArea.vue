@@ -313,7 +313,7 @@
                   <div class="bottom-bar-left">
                     <n-tooltip trigger="hover">
                       <template #trigger>
-                        <button class="bar-icon-btn" :class="{ 'bar-icon-btn--active': tab.queryEditMode }" @click="toggleQueryEditMode(tab)" :disabled="!tab.queryCanEdit">
+                        <button class="bar-icon-btn" :class="{ 'bar-icon-btn--active': tab.queryEditMode }" @click="toggleQueryEditMode(tab)" :disabled="!tab.queryCanEdit || session.readOnly">
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                         </button>
                       </template>
@@ -573,6 +573,7 @@
                     <button
                       class="bar-icon-btn"
                       :class="{ 'bar-icon-btn--active': tab.editMode }"
+                      :disabled="session.readOnly"
                       @click="toggleEditMode(tab)"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
@@ -700,7 +701,7 @@
                         </td>
                         <td class="gm-ptd ptd-mono">{{ col.defaultValue ?? '' }}</td>
                         <td class="gm-ptd ptd-center">
-                          <svg v-if="col.isPrimaryKey" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ref-color-yellow-6)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                          <svg v-if="col.isPrimaryKey" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ref-color-orange-6)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                         </td>
                         <td class="gm-ptd ptd-comment">{{ col.comment || '' }}</td>
                       </tr>
@@ -861,7 +862,9 @@ import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick, h, de
 import { useI18n } from 'vue-i18n'
 import { NTooltip } from 'naive-ui'
 import { useDatabaseStore } from '@/stores/database'
+import { useSessionStore } from '@/stores/session'
 import api from '@/utils/api'
+import { quoteIdentifier } from '@/utils/sql'
 import { useNotify } from '@/utils/notify'
 import { format as formatSql } from 'sql-formatter'
 
@@ -891,6 +894,7 @@ const WORD_WRAP_KEY = 'sql-editor-word-wrap'
 const { t } = useI18n()
 const notify = useNotify()
 const store = useDatabaseStore()
+const session = useSessionStore()
 
 // ── Composables ──
 // deps is mutable: we assign ensureDataTabSchema and refreshTableData later
@@ -1638,7 +1642,8 @@ async function refreshOverviewTab(tab) {
 function openQueryTabWithContext(database, table = null, connId = store.currentConnId, sql = '') {
   if (!connId) return
 
-  const initialSql = sql || (table ? `SELECT * FROM \`${table}\`` : '')
+  const dbType = store.connections.find((c) => c.connId === connId)?.config?.dbType || store.connectionConfig?.dbType
+  const initialSql = sql || (table ? `SELECT * FROM ${quoteIdentifier(table, dbType)}` : '')
   const workspace = getWorkspace(connId)
   const newTab = createQueryTab(connId, database, initialSql)
   workspace.tabs.push(newTab)

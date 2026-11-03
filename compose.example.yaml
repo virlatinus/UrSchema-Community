@@ -1,0 +1,21 @@
+# Copy to compose.yaml, set a password, then: docker compose up -d
+services:
+  urschema:
+    image: ghcr.io/virlatinus/urschema-community:latest
+    # build: .            # or build from this checkout
+    restart: unless-stopped
+    ports:
+      # Drop "127.0.0.1:" to expose it on the network (only with a password, ideally behind TLS)
+      - "127.0.0.1:8080:8080"
+    environment:
+      URSCHEMA_PASSWORD: change-me
+      # URSCHEMA_READ_ONLY: "true"
+      # DB_ENCRYPTION_KEY: <64 hex chars, e.g. from `openssl rand -hex 32`>
+      # URSCHEMA_TLS_CERT: /certs/cert.pem
+      # URSCHEMA_TLS_KEY: /certs/key.pem
+    volumes:
+      - urschema-data:/opt/urschema/data
+      # - ./certs:/certs:ro
+
+volumes:
+  urschema-data:

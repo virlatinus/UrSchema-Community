@@ -1,0 +1,8 @@
+**/node_modules
+www/dist
+backend/build
+backend/logs
+landing
+.wrangler
+.git
+.claude

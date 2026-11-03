@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -56,8 +57,72 @@ type DBConnection interface {
 	// GetConfig returns the connection configuration
 	GetConfig() ConnectionConfig
 
-	// SelectDatabase selects/switches to a specific database
-	SelectDatabase(database string) error
+	// SelectDatabase returns a connection bound to database. It doesn't
+	// change the receiver, so concurrent requests for different databases
+	// on the same connection can't run against each other's database.
+	SelectDatabase(database string) (DBConnection, error)
+}
+
+// databasePools holds one pool per extra database of a server connection
+// (MySQL, PostgreSQL), opened on first use and closed with the connection.
+type databasePools struct {
+	mu    sync.Mutex
+	pools map[string]*sql.DB
+}
+
+// selectDatabase returns parent itself for its own database, otherwise a
+// databaseView on the pool for database, opening it with open if needed.
+func (dp *databasePools) selectDatabase(parent DBConnection, base *BaseConnection, database string, open func(ConnectionConfig) (*sql.DB, error)) (DBConnection, error) {
+	if database == "" || database == base.config.Database {
+		return parent, nil
+	}
+	if base.db == nil {
+		return nil, fmt.Errorf("database connection is nil")
+	}
+
+	cfg := base.config
+	cfg.Database = database
+
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+	pool, ok := dp.pools[database]
+	if !ok {
+		var err error
+		if pool, err = open(cfg); err != nil {
+			return nil, err
+		}
+		if dp.pools == nil {
+			dp.pools = make(map[string]*sql.DB)
+		}
+		dp.pools[database] = pool
+	}
+	return &databaseView{BaseConnection: BaseConnection{db: pool, dbType: base.dbType, config: cfg}, parent: parent}, nil
+}
+
+func (dp *databasePools) closeAll() {
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+	for _, pool := range dp.pools {
+		pool.Close()
+	}
+	dp.pools = nil
+}
+
+// databaseView is a server connection bound to one database. Its pool
+// belongs to the parent connection, which also closes it.
+type databaseView struct {
+	BaseConnection
+	parent DBConnection
+}
+
+func (v *databaseView) Connect(ConnectionConfig) error {
+	return fmt.Errorf("cannot reconnect a database view")
+}
+
+func (v *databaseView) Close() error { return nil }
+
+func (v *databaseView) SelectDatabase(database string) (DBConnection, error) {
+	return v.parent.SelectDatabase(database)
 }
 
 // BaseConnection provides common functionality for all database connections

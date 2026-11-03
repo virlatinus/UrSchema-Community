@@ -59,9 +59,11 @@ func (s *TableDesignerService) CreateTable(conn db.DBConnection, dbName string, 
 	defer cancel()
 
 	if dbName != "" {
-		if err := conn.SelectDatabase(dbName); err != nil {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
 			return fmt.Errorf("failed to select database: %w", err)
 		}
+		conn = selected
 	}
 
 	ddl, err := s.BuildCreateDDL(conn.GetDBType(), def)
@@ -79,9 +81,11 @@ func (s *TableDesignerService) AlterTable(conn db.DBConnection, dbName, tableNam
 	defer cancel()
 
 	if dbName != "" {
-		if err := conn.SelectDatabase(dbName); err != nil {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
 			return fmt.Errorf("failed to select database: %w", err)
 		}
+		conn = selected
 	}
 
 	dbType := conn.GetDBType()
@@ -103,9 +107,11 @@ func (s *TableDesignerService) DropTable(conn db.DBConnection, dbName, tableName
 	defer cancel()
 
 	if dbName != "" {
-		if err := conn.SelectDatabase(dbName); err != nil {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
 			return fmt.Errorf("failed to select database: %w", err)
 		}
+		conn = selected
 	}
 
 	var query string
@@ -130,9 +136,11 @@ func (s *TableDesignerService) RenameTable(conn db.DBConnection, dbName, oldName
 	defer cancel()
 
 	if dbName != "" {
-		if err := conn.SelectDatabase(dbName); err != nil {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
 			return fmt.Errorf("failed to select database: %w", err)
 		}
+		conn = selected
 	}
 
 	var query string
@@ -157,9 +165,11 @@ func (s *TableDesignerService) GetTableDDL(conn db.DBConnection, dbName, tableNa
 	defer cancel()
 
 	if dbName != "" {
-		if err := conn.SelectDatabase(dbName); err != nil {
+		selected, err := conn.SelectDatabase(dbName)
+		if err != nil {
 			return "", fmt.Errorf("failed to select database: %w", err)
 		}
+		conn = selected
 	}
 
 	switch conn.GetDBType() {

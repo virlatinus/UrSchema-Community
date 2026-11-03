@@ -279,5 +279,5 @@
   --jm-text-secondary: var(--sys-color-text-secondary);
 
   /* ── sys: status warning (missing from initial token set) ── */
-  --sys-color-status-warning: var(--ref-color-yellow-6);
+  --sys-color-status-warning: var(--ref-color-orange-6);
 }
