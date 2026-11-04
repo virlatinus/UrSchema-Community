@@ -247,7 +247,7 @@ The backend supports four levels of Apache-style access logging, off by default:
 ./main -dump=text     # full request/response dump, plain text
 ```
 
-`-dump` logs request bodies, which include database passwords sent by the connection form. Session cookies and the login password are redacted, but don't leave `-dump` on in production.
+`-dump` logs full request and response bodies, including the SQL you run and the data it returns. Session cookies, the login password and any JSON field named like `password` or `secret` (such as database passwords in the connection form) are redacted, but treat it as a debugging tool and don't leave it on in production.
 
 ---
 
@@ -272,7 +272,8 @@ UrSchema gives whoever reaches it the same access as the database accounts in it
 UrSchema has **one shared password, not user accounts**. That means:
 
 - No per-user identity, no 2FA, and no per-user audit trail. Logins, failed logins and logouts are logged with the client address (`[auth]` lines), but they can't say *who* signed in.
-- Failed logins are throttled to one attempt per second across all clients, which makes guessing a strong password impractical. There is deliberately no lockout: with one shared password, a lockout would let anyone lock everyone out.
+- Failed logins are throttled per client address: after a failure that address must wait 1 second, doubling with each further failure up to 5 minutes (it gets `429` with `Retry-After` meanwhile). A correct password from any other address is accepted immediately, so a flood of wrong guesses only slows down whoever sends it. There is deliberately no permanent lockout: with one shared password, that would let anyone lock everyone out.
+- Behind a reverse proxy, every client shares the proxy's address, so one client's failures make everyone wait. Rate-limit logins in the proxy instead (Caddy, nginx and Traefik all can), or put it behind per-user authentication as below.
 - Rotating the password means restarting UrSchema, which also ends all sessions.
 
 That's adequate on a trusted network or behind a VPN, an IP allowlist or an SSH tunnel. Before putting UrSchema next to production on a reachable network, put it behind a reverse proxy that does per-user authentication (oauth2-proxy, Authelia, Cloudflare Access, Tailscale, etc.). The proxy then gives you SSO, 2FA and a per-user access log; keep the UrSchema password as a second layer, or use `URSCHEMA_ALLOW_NO_PASSWORD=true` if the proxy is the only way in.
@@ -296,7 +297,12 @@ With `URSCHEMA_READ_ONLY=true`:
 
 - Row edits, inserts and deletes, table design, rename, truncate, drop, create database and all imports are refused by the server and hidden in the UI.
 - The SQL editor accepts a single `SELECT`, `WITH`, `SHOW`, `EXPLAIN`, `DESCRIBE`, `PRAGMA` (without `=`), `VALUES` or `TABLE` statement. It then runs inside a `READ ONLY` transaction (PostgreSQL, MySQL) or with `PRAGMA query_only` (SQLite), so writes hidden in a CTE or `EXPLAIN ANALYZE` are refused by the database too.
-- Exports still work, including writing dump files to the server's filesystem.
+- Some actions don't change your databases and stay available:
+  - exports, including writing dump files to paths on the server;
+  - browsing the server's folders in the file picker (whatever the UrSchema process can read);
+  - saving new connections, to any database host the server can reach.
+
+  So in read-only mode, still connect with a database user that only has `SELECT` grants, and run UrSchema somewhere everything it can read may be seen, such as its own container or a dedicated OS user.
 
 Read-only mode is a guardrail, not a privilege boundary. Functions with side effects that the database allows inside a read-only transaction (for example `pg_terminate_backend`) still run. When it has to be guaranteed, connect with a database user that only has `SELECT` grants.
 

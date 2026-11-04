@@ -12,7 +12,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
+	"math"
+	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -20,7 +23,13 @@ import (
 const (
 	cookieName = "urschema_session"
 	sessionTTL = 12 * time.Hour
-	failDelay  = time.Second
+
+	// After a failed login, the same client address must wait
+	// backoffBase, doubling with each further failure up to backoffMax.
+	// A client's failures are forgotten forgetAfter its back-off ends.
+	backoffBase = time.Second
+	backoffMax  = 5 * time.Minute
+	forgetAfter = 15 * time.Minute
 )
 
 // Guard checks the configured password and tracks login sessions.
@@ -31,9 +40,15 @@ type Guard struct {
 	mu       sync.Mutex
 	sessions map[string]time.Time // token -> expiry
 
-	// loginMu serializes login attempts; failed attempts hold it for
-	// failDelay, capping brute force at one guess per second.
-	loginMu sync.Mutex
+	// failMu guards failures and is held for each whole login decision
+	// (a cheap hash compare), so parallel requests can't skip a back-off.
+	failMu   sync.Mutex
+	failures map[string]*failState // client IP -> recent failed logins
+}
+
+type failState struct {
+	count int
+	until time.Time // no attempts from this client before this time
 }
 
 // New returns a Guard for password, or nil when password is empty.
@@ -44,6 +59,7 @@ func New(password string) *Guard {
 	return &Guard{
 		passwordHash: sha256.Sum256([]byte(password)),
 		sessions:     make(map[string]time.Time),
+		failures:     make(map[string]*failState),
 	}
 }
 
@@ -104,18 +120,20 @@ func (g *Guard) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body)
 
-	g.loginMu.Lock()
-	given := sha256.Sum256([]byte(body.Password))
-	if subtle.ConstantTimeCompare(given[:], g.passwordHash[:]) != 1 {
-		log.Printf("[auth] failed login from %s", clientAddr(r))
-		time.Sleep(failDelay)
-		g.loginMu.Unlock()
+	ok, retryAfter := g.checkPassword(clientIP(r), body.Password)
+	if retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(retryAfter.Seconds()))))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": http.StatusTooManyRequests, "msg": "too many failed logins, try again later"})
+		return
+	}
+	if !ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(w).Encode(map[string]any{"code": http.StatusUnauthorized, "msg": "invalid password"})
 		return
 	}
-	g.loginMu.Unlock()
 
 	token, err := newToken()
 	if err != nil {
@@ -143,6 +161,56 @@ func (g *Guard) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 	})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// checkPassword verifies password for a client. A client still backing off
+// from earlier failures gets retryAfter > 0 and no check at all. Failures
+// only slow down the address they come from; a correct password from any
+// other address is accepted immediately.
+func (g *Guard) checkPassword(ip, password string) (ok bool, retryAfter time.Duration) {
+	g.failMu.Lock()
+	defer g.failMu.Unlock()
+
+	now := time.Now()
+	for addr, f := range g.failures {
+		if now.After(f.until.Add(forgetAfter)) {
+			delete(g.failures, addr)
+		}
+	}
+
+	f := g.failures[ip]
+	if f != nil && now.Before(f.until) {
+		return false, f.until.Sub(now)
+	}
+
+	given := sha256.Sum256([]byte(password))
+	if subtle.ConstantTimeCompare(given[:], g.passwordHash[:]) == 1 {
+		delete(g.failures, ip)
+		return true, 0
+	}
+
+	if f == nil {
+		f = &failState{}
+		g.failures[ip] = f
+	}
+	f.count++
+	backoff := backoffMax
+	if f.count <= 20 { // beyond that the shift would overflow; already capped
+		backoff = min(backoffBase<<(f.count-1), backoffMax)
+	}
+	f.until = now.Add(backoff)
+	log.Printf("[auth] failed login from %s (%d in a row; next attempt allowed in %s)", ip, f.count, backoff)
+	return false, 0
+}
+
+// clientIP is the address failed logins are counted against: the direct
+// peer, without the port. Behind a reverse proxy every client shares the
+// proxy's address, so rate limiting belongs in the proxy there.
+func clientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 // HandleLogout handles POST /api/auth/logout.

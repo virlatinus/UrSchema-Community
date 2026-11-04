@@ -1,7 +1,12 @@
 # syntax=docker/dockerfile:1
 
+# The web and api stages run on the build machine's own platform
+# ($BUILDPLATFORM), not under QEMU emulation for each target: the frontend
+# output is platform-independent and Go cross-compiles via TARGETARCH.
+# Emulated arm64 `pnpm install` could hang for hours.
+
 # ── Frontend ─────────────────────────────────────────────
-FROM node:22-alpine AS web
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 WORKDIR /src/www
 RUN corepack enable && corepack prepare pnpm@9.15.9 --activate
 COPY www/package.json www/pnpm-lock.yaml ./
@@ -10,7 +15,7 @@ COPY www/ ./
 RUN pnpm run build
 
 # ── Backend ──────────────────────────────────────────────
-FROM golang:1.25-alpine AS api
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS api
 WORKDIR /src/backend
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
