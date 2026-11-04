@@ -45,6 +45,7 @@ jobs:
   image:
     if: github.repository == 'virlatinus/UrSchema-Community'
     runs-on: ubuntu-latest
+    timeout-minutes: 30 # normally ~5 min; fail fast instead of GitHub's 6h default
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v4

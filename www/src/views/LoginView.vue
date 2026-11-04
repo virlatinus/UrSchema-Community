@@ -35,7 +35,12 @@ async function submit() {
   try {
     await session.login(password.value)
   } catch (e) {
-    error.value = e?.response?.status === 401 ? t('login.invalid') : t('login.failed', { msg: e.message })
+    const status = e?.response?.status
+    if (status === 429) {
+      error.value = t('login.tooMany', { s: e.response.headers['retry-after'] || '?' })
+    } else {
+      error.value = status === 401 ? t('login.invalid') : t('login.failed', { msg: e.message })
+    }
   } finally {
     loading.value = false
   }

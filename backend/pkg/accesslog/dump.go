@@ -61,10 +61,7 @@ func dumpHandler(next http.Handler, out io.Writer, format DumpFormat, includeBod
 			body, err := io.ReadAll(r.Body)
 			_ = r.Body.Close()
 			if err == nil {
-				e.RequestBody = jsonBody(body)
-				if r.URL.Path == "/api/auth/login" {
-					e.RequestBody = jsonBody(`{"password":"[redacted]"}`)
-				}
+				e.RequestBody = jsonBody(redactSecrets(body))
 				r.Body = io.NopCloser(bytes.NewReader(body))
 			}
 		}
@@ -77,11 +74,56 @@ func dumpHandler(next http.Handler, out io.Writer, format DumpFormat, includeBod
 		e.Duration = time.Since(start).String()
 		e.ResponseHeaders = redactHeaders(w.Header(), "Set-Cookie")
 		if includeBody {
-			e.ResponseBody = jsonBody(rec.body.Bytes())
+			e.ResponseBody = jsonBody(redactSecrets(rec.body.Bytes()))
 		}
 
 		writeEntry(out, format, e)
 	})
+}
+
+// redactSecrets masks the values of JSON object fields whose name contains
+// "password" or "secret" (the login password, database passwords in the
+// connection form and in saved-connection responses), at any depth. Bodies
+// that aren't JSON, or contain no such field, are returned unchanged.
+func redactSecrets(body []byte) []byte {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil || !redactValue(v) {
+		return body
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// redactValue masks secret fields in place and reports whether it changed
+// anything.
+func redactValue(v any) bool {
+	changed := false
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			name := strings.ToLower(k)
+			if s, ok := val.(string); ok && s != "" && (strings.Contains(name, "password") || strings.Contains(name, "secret")) {
+				t[k] = "[redacted]"
+				changed = true
+				continue
+			}
+			if redactValue(val) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, val := range t {
+			if redactValue(val) {
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 // redactHeaders clones h with the named header's values masked, so

@@ -16,6 +16,7 @@ export default {
         password: 'Password',
         submit: 'Sign in',
         invalid: 'Incorrect password',
+        tooMany: 'Too many failed attempts. Try again in {s} s.',
         failed: 'Sign-in failed: {msg}',
     },
 
