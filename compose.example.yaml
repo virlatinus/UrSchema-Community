@@ -21,6 +21,10 @@ services:
       # URSCHEMA_READ_ONLY: "true"
       # URSCHEMA_TLS_CERT: /certs/cert.pem
       # URSCHEMA_TLS_KEY: /certs/key.pem
+      # Behind a reverse proxy at https://example.com/db-admin/ (see README):
+      # URSCHEMA_BASE_PATH: /db-admin
+      # URSCHEMA_TRUSTED_PROXIES: 172.16.0.0/12
+      # URSCHEMA_CONNECTIONS_FILE: /config/connections.json
     secrets:
       - urschema_password
       - urschema_key

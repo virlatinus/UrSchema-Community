@@ -15,6 +15,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"sqlmanager/pkg/proxy"
 	"strconv"
 	"sync"
 	"time"
@@ -36,6 +37,7 @@ const (
 // A nil *Guard means authentication is disabled.
 type Guard struct {
 	passwordHash [32]byte
+	cookiePath   string
 
 	mu       sync.Mutex
 	sessions map[string]time.Time // token -> expiry
@@ -52,12 +54,15 @@ type failState struct {
 }
 
 // New returns a Guard for password, or nil when password is empty.
-func New(password string) *Guard {
+// cookiePath limits the session cookie to UrSchema's own pages, e.g.
+// "/db-admin" when it is served under that prefix.
+func New(password, cookiePath string) *Guard {
 	if password == "" {
 		return nil
 	}
 	return &Guard{
 		passwordHash: sha256.Sum256([]byte(password)),
+		cookiePath:   cookiePath,
 		sessions:     make(map[string]time.Time),
 		failures:     make(map[string]*failState),
 	}
@@ -154,10 +159,10 @@ func (g *Guard) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    token,
-		Path:     "/",
+		Path:     g.cookiePath,
 		MaxAge:   int(sessionTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   isHTTPS(r),
+		Secure:   proxy.HTTPS(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 	w.WriteHeader(http.StatusNoContent)
@@ -203,9 +208,10 @@ func (g *Guard) checkPassword(ip, password string) (ok bool, retryAfter time.Dur
 	return false, 0
 }
 
-// clientIP is the address failed logins are counted against: the direct
-// peer, without the port. Behind a reverse proxy every client shares the
-// proxy's address, so rate limiting belongs in the proxy there.
+// clientIP is the address failed logins are counted against, without the
+// port: the direct peer, or the client behind a trusted proxy (see
+// proxy.Trusted.Wrap). Behind an untrusted proxy every client shares the
+// proxy's address.
 func clientIP(r *http.Request) string {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
@@ -219,21 +225,23 @@ func (g *Guard) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if g != nil {
-		if c, err := r.Cookie(cookieName); err == nil {
-			g.mu.Lock()
-			delete(g.sessions, c.Value)
-			g.mu.Unlock()
-			log.Printf("[auth] logout from %s", clientAddr(r))
-		}
+	if g == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if c, err := r.Cookie(cookieName); err == nil {
+		g.mu.Lock()
+		delete(g.sessions, c.Value)
+		g.mu.Unlock()
+		log.Printf("[auth] logout from %s", clientAddr(r))
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    "",
-		Path:     "/",
+		Path:     g.cookiePath,
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   isHTTPS(r),
+		Secure:   proxy.HTTPS(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 	w.WriteHeader(http.StatusNoContent)
@@ -255,8 +263,4 @@ func clientAddr(r *http.Request) string {
 		return r.RemoteAddr + " (X-Forwarded-For: " + fwd + ")"
 	}
 	return r.RemoteAddr
-}
-
-func isHTTPS(r *http.Request) bool {
-	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"sqlmanager/pkg/accesslog"
 	"sqlmanager/pkg/auth"
+	"sqlmanager/pkg/proxy"
 	"strings"
 
 	"github.com/DemonZack/simplejrpc-go/core"
@@ -27,6 +28,12 @@ type Options struct {
 	// TLSCert and TLSKey are PEM file paths; when both are set the server
 	// speaks HTTPS instead of HTTP.
 	TLSCert, TLSKey string
+	// BasePath is the URL prefix UrSchema is served under, such as
+	// "/db-admin", or "" at the root. See withBasePath.
+	BasePath string
+	// TrustedProxies may report the client address and scheme in
+	// X-Forwarded-For and X-Forwarded-Proto.
+	TrustedProxies proxy.Trusted
 }
 
 type Server struct {
@@ -158,11 +165,38 @@ func (s *Server) Start(addr, wwwDir string, logOpts accesslog.Options) error {
 		_ = json.NewEncoder(w).Encode(map[string]any{"code": http.StatusForbidden, "msg": "cross-origin request blocked"})
 	}))
 
-	srv := &http.Server{Addr: addr, Handler: accesslog.Wrap(csrf.Handler(mux), logOpts)}
+	handler := withBasePath(s.opts.BasePath, csrf.Handler(mux))
+	handler = s.opts.TrustedProxies.Wrap(accesslog.Wrap(handler, logOpts))
+	srv := &http.Server{Addr: addr, Handler: handler}
 	if s.opts.TLSCert != "" && s.opts.TLSKey != "" {
 		return srv.ListenAndServeTLS(s.opts.TLSCert, s.opts.TLSKey)
 	}
 	return srv.ListenAndServe()
+}
+
+// withBasePath lets a reverse proxy forward requests under base either
+// with the prefix stripped or with it still on: the prefix is removed
+// when present, and base itself redirects to base+"/" so the frontend's
+// relative URLs resolve under it. An empty base returns h unchanged.
+func withBasePath(base string, h http.Handler) http.Handler {
+	if base == "" {
+		return h
+	}
+	stripped := http.StripPrefix(base, h)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == base:
+			target := base + "/"
+			if r.URL.RawQuery != "" {
+				target += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, target, http.StatusMovedPermanently)
+		case strings.HasPrefix(r.URL.Path, base+"/"):
+			stripped.ServeHTTP(w, r)
+		default:
+			h.ServeHTTP(w, r)
+		}
+	})
 }
 
 // handleAuthStatus tells the frontend whether it must show the login

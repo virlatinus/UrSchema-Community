@@ -932,7 +932,7 @@ watch(contextMenuNode, (node) => {
       { type: 'divider' },
       { label: t('tree.disconnect'), key: 'disconnect' },
       { label: t('tree.deleteConn'), key: 'delete-connection', props: { style: { color: '#ff4d4f' } } }
-    ]
+    ].filter((option) => !(node.connData?.preset && ['edit', 'delete-connection'].includes(option.key)))
   } else if (node.type === 'database') {
     contextMenuOptions.value = [
       { label: t('tree.overview'), key: 'overview' },

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sqlmanager/pkg/secret"
+	"strings"
 	"sync"
 	"time"
 )
@@ -72,6 +73,9 @@ type SavedConnection struct {
 	FilePath  string    `json:"filePath"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// Preset is true for connections from URSCHEMA_CONNECTIONS_FILE,
+	// which can't be edited or deleted.
+	Preset bool `json:"preset,omitempty"`
 }
 
 // ConnectionStore manages encrypted connection configurations
@@ -260,6 +264,9 @@ func (cs *ConnectionStore) saveConnections(connections map[string]*SavedConnecti
 
 // SaveConnection saves or updates a connection configuration
 func (cs *ConnectionStore) SaveConnection(conn *SavedConnection) error {
+	if strings.HasPrefix(conn.ID, presetIDPrefix) {
+		return errPreset(conn.ID)
+	}
 	connections, err := cs.loadConnections()
 	if err != nil {
 		return err
@@ -284,7 +291,12 @@ func (cs *ConnectionStore) ListConnections() ([]*SavedConnection, error) {
 		return nil, err
 	}
 
-	result := make([]*SavedConnection, 0, len(connections))
+	result := make([]*SavedConnection, 0, len(presets)+len(connections))
+	for _, conn := range presets {
+		safeCopy := *conn
+		safeCopy.Password = ""
+		result = append(result, &safeCopy)
+	}
 	for _, conn := range connections {
 		// Create copy without password
 		safeCopy := *conn
@@ -297,6 +309,9 @@ func (cs *ConnectionStore) ListConnections() ([]*SavedConnection, error) {
 
 // GetConnection retrieves a single connection by ID (with password)
 func (cs *ConnectionStore) GetConnection(id string) (*SavedConnection, error) {
+	if p := findPreset(id); p != nil {
+		return p, nil
+	}
 	connections, err := cs.loadConnections()
 	if err != nil {
 		return nil, err
@@ -312,6 +327,9 @@ func (cs *ConnectionStore) GetConnection(id string) (*SavedConnection, error) {
 
 // DeleteConnection removes a connection by ID
 func (cs *ConnectionStore) DeleteConnection(id string) error {
+	if strings.HasPrefix(id, presetIDPrefix) {
+		return errPreset(id)
+	}
 	connections, err := cs.loadConnections()
 	if err != nil {
 		return err

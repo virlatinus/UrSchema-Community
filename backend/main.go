@@ -7,13 +7,17 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"sqlmanager/handler/rpc"
 	"sqlmanager/pkg/accesslog"
 	"sqlmanager/pkg/auth"
+	"sqlmanager/pkg/config"
 	"sqlmanager/pkg/db"
+	"sqlmanager/pkg/proxy"
 	"sqlmanager/pkg/secret"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -90,16 +94,40 @@ func main() {
 		scheme = "https"
 	}
 
+	// "/" and "" both mean the root; otherwise keep "/prefix" without
+	// the trailing slash.
+	basePath := strings.TrimRight(os.Getenv("URSCHEMA_BASE_PATH"), "/")
+	if basePath != "" && (!strings.HasPrefix(basePath, "/") || path.Clean(basePath) != basePath) {
+		log.Fatalf("invalid URSCHEMA_BASE_PATH %q (want a path such as /db-admin)", os.Getenv("URSCHEMA_BASE_PATH"))
+	}
+	cookiePath := basePath
+	if cookiePath == "" {
+		cookiePath = "/"
+	}
+
+	trusted, err := proxy.Parse(os.Getenv("URSCHEMA_TRUSTED_PROXIES"))
+	if err != nil {
+		log.Fatalf("URSCHEMA_TRUSTED_PROXIES: %v", err)
+	}
+
+	if f := os.Getenv("URSCHEMA_CONNECTIONS_FILE"); f != "" {
+		if err := config.LoadPresets(f); err != nil {
+			log.Fatalf("URSCHEMA_CONNECTIONS_FILE: %v", err)
+		}
+	}
+
 	// Start idle connection cleanup (checks every 5 minutes, evicts connections unused for 15 minutes)
 	manager := db.GetManager()
 	manager.StartCleanupRoutine(5*time.Minute, 15*time.Minute)
 
 	// Create the RPC server and register services
 	server := rpc.NewServer(rpc.Options{
-		Auth:     auth.New(password),
-		ReadOnly: readOnly,
-		TLSCert:  tlsCert,
-		TLSKey:   tlsKey,
+		Auth:           auth.New(password, cookiePath),
+		ReadOnly:       readOnly,
+		TLSCert:        tlsCert,
+		TLSKey:         tlsKey,
+		BasePath:       basePath,
+		TrustedProxies: trusted,
 	})
 
 	// Listen for shutdown signals for graceful shutdown
@@ -118,7 +146,7 @@ func main() {
 	}()
 
 	// Start the server (blocking)
-	log.Printf("UrSchema starting on %s://%s (serving frontend from %s; auth: %t, read-only: %t)", scheme, addr, wwwDir, password != "", readOnly)
+	log.Printf("UrSchema starting on %s://%s%s/ (serving frontend from %s; auth: %t, read-only: %t)", scheme, addr, basePath, wwwDir, password != "", readOnly)
 	if err := server.Start(addr, wwwDir, logOpts); err != nil {
 		core.Container.Log().Error(fmt.Sprintf("failed to start HTTP server: %v", err))
 		return

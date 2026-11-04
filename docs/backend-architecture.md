@@ -65,13 +65,14 @@ frontend doc) after a restart.
 | Path | Responsibility |
 |---|---|
 | `main.go` | Entrypoint: flag parsing (`-v`/`-vv`/`-vvv`/`-dump`), idle-connection cleanup routine, graceful shutdown on SIGINT/SIGTERM. |
-| `handler/rpc/server.go` | Builds the `net/http.ServeMux`, wires `/api/` to the JSON-RPC bridge and `/` to the static frontend, wraps everything in `pkg/accesslog`. |
+| `handler/rpc/server.go` | Builds the `net/http.ServeMux`, wires `/api/` to the JSON-RPC bridge and `/` to the static frontend, strips `URSCHEMA_BASE_PATH` when present, wraps everything in `pkg/accesslog` and, outermost, `pkg/proxy`. |
 | `handler/rpc/*.go` | ~14 handler files registering 60+ RPC methods (connections, databases, schemas, tables, table designer/DDL, queries, row CRUD, import/export, dump tasks, filesystem browsing). |
 | `service/*.go` | Business logic per domain: `database_service`, `table_service`, `table_designer_service` (DDL diffing), `import_export_service`, `database_dump_service` (mysqldump/CLI + pure-Go paths), `database_compatible_export_service`, `database_dump_task_service` (background export/import task queue). |
 | `pkg/db` | `DBConnection` interface + MySQL/PostgreSQL/SQLite adapters, and the in-memory `ConnectionManager` (idle eviction, graceful shutdown). |
-| `pkg/config` | `ConnectionStore`: AES-256-GCM encrypted, file-backed store of saved connection configs; resolves the runtime data directory (`DataDir()`). |
+| `pkg/config` | `ConnectionStore`: AES-256-GCM encrypted, file-backed store of saved connection configs, plus the read-only connections from `URSCHEMA_CONNECTIONS_FILE` (`presets.go`); resolves the runtime data directory (`DataDir()`). |
 | `pkg/validators` | Identifier allow-list validation + per-dialect escaping, used wherever table/column names are interpolated into DDL (defense in depth against injection via identifiers — see Security below). |
 | `pkg/accesslog` | Apache-style access logging middleware (`-v` common, `-vv` combined, `-vvv` headers, `-dump` full payloads) — added in this codebase's most recent iteration. |
+| `pkg/proxy` | `URSCHEMA_TRUSTED_PROXIES`: for requests from a trusted proxy, sets `RemoteAddr` to the client from `X-Forwarded-For` and decides whether `X-Forwarded-Proto` is believed. |
 | `pkg/files`, `pkg/rpcutil` | Small filesystem and RPC-param-parsing helpers. |
 | `i18n/en.ini` | Backend error-message catalog (`gi18n`), key-based so more languages are additive. |
 

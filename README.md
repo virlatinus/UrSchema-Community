@@ -266,6 +266,9 @@ UrSchema gives whoever reaches it the same access as the database accounts in it
 | `URSCHEMA_READ_ONLY` | `false` | Read-only mode (below). |
 | `URSCHEMA_TLS_CERT`, `URSCHEMA_TLS_KEY` | unset | PEM certificate and key paths. When both are set UrSchema serves HTTPS only. |
 | `DB_ENCRYPTION_KEY` / `DB_ENCRYPTION_KEY_FILE` | unset | 64 hex chars (32 bytes) used to encrypt saved connections, directly or from a file (below). |
+| `URSCHEMA_BASE_PATH` | `/` | URL prefix when a reverse proxy serves UrSchema under a sub-path, e.g. `/db-admin` (below). |
+| `URSCHEMA_TRUSTED_PROXIES` | unset | Comma-separated CIDRs or IPs of your reverse proxies. Requests from them take the client address from `X-Forwarded-For` (for login throttling and the access log) and the scheme from `X-Forwarded-Proto`. |
+| `URSCHEMA_CONNECTIONS_FILE` | unset | JSON file of connections to show to everyone; they can't be edited in the UI (below). |
 
 ### Login: what it does and doesn't cover
 
@@ -273,23 +276,48 @@ UrSchema has **one shared password, not user accounts**. That means:
 
 - No per-user identity, no 2FA, and no per-user audit trail. Logins, failed logins and logouts are logged with the client address (`[auth]` lines), but they can't say *who* signed in.
 - Failed logins are throttled per client address: after a failure that address must wait 1 second, doubling with each further failure up to 5 minutes (it gets `429` with `Retry-After` meanwhile). A correct password from any other address is accepted immediately, so a flood of wrong guesses only slows down whoever sends it. There is deliberately no permanent lockout: with one shared password, that would let anyone lock everyone out.
-- Behind a reverse proxy, every client shares the proxy's address, so one client's failures make everyone wait. Rate-limit logins in the proxy instead (Caddy, nginx and Traefik all can), or put it behind per-user authentication as below.
+- Behind a reverse proxy, every client shares the proxy's address, so one client's failures make everyone wait. List the proxy in `URSCHEMA_TRUSTED_PROXIES` so throttling uses the client address from `X-Forwarded-For`, or rate-limit logins in the proxy instead (Caddy, nginx and Traefik all can).
 - Rotating the password means restarting UrSchema, which also ends all sessions.
 
 That's adequate on a trusted network or behind a VPN, an IP allowlist or an SSH tunnel. Before putting UrSchema next to production on a reachable network, put it behind a reverse proxy that does per-user authentication (oauth2-proxy, Authelia, Cloudflare Access, Tailscale, etc.). The proxy then gives you SSO, 2FA and a per-user access log; keep the UrSchema password as a second layer, or use `URSCHEMA_ALLOW_NO_PASSWORD=true` if the proxy is the only way in.
 
 ### Sessions and CSRF
 
-- The session cookie is `HttpOnly` (scripts can't read it) and `SameSite=Strict` (browsers don't send it on requests started from other sites). It's `Secure` when the request arrived over HTTPS, directly or with `X-Forwarded-Proto: https`.
+- The session cookie is `HttpOnly` (scripts can't read it) and `SameSite=Strict` (browsers don't send it on requests started from other sites). It's `Secure` when the request arrived over HTTPS, directly or with `X-Forwarded-Proto: https` (only from `URSCHEMA_TRUSTED_PROXIES` when that is set). Its `Path` is `URSCHEMA_BASE_PATH`, so other pages on the same host never receive it.
 - `SameSite` treats sibling subdomains as the same site, so the API also rejects cross-origin writes: any non-GET request whose `Sec-Fetch-Site` header (sent by all current browsers) says it came from another origin, or, without that header, whose `Origin` doesn't match the `Host`, gets `403`. This uses Go's `net/http.CrossOriginProtection`.
 - All state-changing API calls are `POST`. Requests without browser headers (curl, scripts) are unaffected.
 - Behind a reverse proxy, keep the original `Host` header (the default in Caddy and Traefik; `proxy_set_header Host $host;` in nginx), so the `Origin` fallback check matches.
 
 ### TLS
 
-Without TLS, the password, session cookie and every query and result travel in plain text. Either set `URSCHEMA_TLS_CERT`/`URSCHEMA_TLS_KEY`, or terminate TLS at a reverse proxy (Caddy, nginx, Traefik) and keep UrSchema on `127.0.0.1`. The session cookie gets the `Secure` flag when the request arrived over HTTPS directly or with `X-Forwarded-Proto: https`.
+Without TLS, the password, session cookie and every query and result travel in plain text. Either set `URSCHEMA_TLS_CERT`/`URSCHEMA_TLS_KEY`, or terminate TLS at a reverse proxy (Caddy, nginx, Traefik) and keep UrSchema on `127.0.0.1`. The session cookie gets the `Secure` flag when the request arrived over HTTPS directly or with `X-Forwarded-Proto: https`; once `URSCHEMA_TRUSTED_PROXIES` is set, that header is only believed from those addresses.
 
 For access from your own machine only, an SSH tunnel needs no extra setup: `ssh -L 8080:127.0.0.1:8080 your-server`.
+
+### Under a sub-path
+
+To serve UrSchema at, say, `https://example.com/db-admin/`, set `URSCHEMA_BASE_PATH=/db-admin`. The proxy may forward requests with the prefix stripped or kept; both work, and `/db-admin` redirects to `/db-admin/`. With Apache, for example:
+
+```apache
+ProxyPass        /db-admin/ http://127.0.0.1:8080/db-admin/
+ProxyPassReverse /db-admin/ http://127.0.0.1:8080/db-admin/
+RequestHeader set X-Forwarded-Proto https
+```
+
+with `URSCHEMA_TRUSTED_PROXIES=127.0.0.1` so logins are throttled per client rather than per proxy. Open UrSchema through the prefix only: the session cookie is limited to that path.
+
+### Preconfigured connections
+
+`URSCHEMA_CONNECTIONS_FILE` names a JSON list of connections that every user sees without adding them:
+
+```json
+[
+  { "name": "local", "type": "mysql", "host": "mysql", "port": 3306,
+    "user": "root", "password_file": "/run/secrets/db_pass" }
+]
+```
+
+`type` is `mysql` or `postgres`; `port` defaults to 3306 or 5432. The file and each `password_file` are read once at start-up, and a missing or invalid one stops the server. These connections can't be edited or deleted in the UI; change the file and restart instead. As with saved connections, the browser fetches the password when connecting, so any logged-in user can read it.
 
 ### Read-only mode
 

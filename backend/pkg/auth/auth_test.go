@@ -6,7 +6,7 @@ import (
 )
 
 func TestCheckPasswordBackoff(t *testing.T) {
-	g := New("right")
+	g := New("right", "/")
 
 	if ok, wait := g.checkPassword("10.0.0.1", "wrong"); ok || wait != 0 {
 		t.Fatalf("first failure: ok=%v wait=%v", ok, wait)
@@ -32,7 +32,7 @@ func TestCheckPasswordBackoff(t *testing.T) {
 }
 
 func TestBackoffDoublesAndCaps(t *testing.T) {
-	g := New("right")
+	g := New("right", "/")
 	g.failures["10.0.0.1"] = &failState{count: 2, until: time.Now()} // two earlier failures, back-off just ended
 	g.checkPassword("10.0.0.1", "wrong")
 	if got := time.Until(g.failures["10.0.0.1"].until); got <= 3*time.Second || got > 4*time.Second {

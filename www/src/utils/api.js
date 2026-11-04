@@ -7,7 +7,8 @@ import axios from 'axios'
 
 class DatabaseAPI {
     constructor() {
-        this.baseURL = '/api'
+        // Relative, so the app also works under a URL prefix (URSCHEMA_BASE_PATH)
+        this.baseURL = 'api'
         this.connectionRecoveryHandler = null
         this.connectionAliases = new Map()
         this.pendingRecoveries = new Map()

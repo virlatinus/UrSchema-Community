@@ -12,7 +12,7 @@ export const useSessionStore = defineStore('session', () => {
 
   async function fetchStatus() {
     try {
-      const { data } = await axios.get('/api/auth/status')
+      const { data } = await axios.get('api/auth/status')
       authRequired.value = !!data.authRequired
       authenticated.value = !!data.authenticated
       readOnly.value = !!data.readOnly
@@ -24,12 +24,12 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   async function login(password) {
-    await axios.post('/api/auth/login', { password })
+    await axios.post('api/auth/login', { password })
     authenticated.value = true
   }
 
   async function logout() {
-    await axios.post('/api/auth/logout')
+    await axios.post('api/auth/logout')
     authenticated.value = false
   }
 
