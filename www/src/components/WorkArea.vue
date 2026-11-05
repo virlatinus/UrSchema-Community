@@ -196,7 +196,7 @@
             </div>
 
             <!-- Editor Area (fills available space) -->
-            <div class="query-editor-area" :style="{ flex: tab.result ? `0 0 ${tab.editorHeight || 55}%` : '1' }">
+            <div class="query-editor-area" :style="{ flex: tab.result ? `0 1 ${tab.editorHeight || 55}%` : '1' }">
               <SQLEditor 
                 :ref="el => setTabEditorRef(tab.id, el)"
                 v-model="tab.sql" 
@@ -216,7 +216,7 @@
             ></div>
 
             <!-- Results Panel - show on any result (success or error) -->
-            <div v-if="tab.result" class="query-results" :style="{ flex: `0 0 ${100 - (tab.editorHeight || 55)}%` }">
+            <div v-if="tab.result" class="query-results" :style="{ flex: `0 1 ${100 - (tab.editorHeight || 55)}%` }">
 
               <!-- Error State -->
               <n-alert v-if="tab.result.error" type="error" :bordered="false" style="margin: 8px 0;">
